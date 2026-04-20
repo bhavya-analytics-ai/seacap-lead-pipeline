@@ -1,0 +1,14 @@
+.env
+__pycache__/
+*.pyc
+.DS_Store
+*.log
+
+# data files — never commit
+data/
+output/
+processed/
+incoming/
+
+# failed push queue
+scripts/failed_close_pushes.jsonl

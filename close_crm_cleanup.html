@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Close CRM Cleanup — SeaCap</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: linear-gradient(135deg, #1a0a0a 0%, #2d1010 25%, #3d1a0a 50%, #2a0d1a 75%, #1a0a2a 100%);
+    background-attachment: fixed;
+    color: #f0e0d6;
+    min-height: 100vh;
+  }
+
+  /* NAV */
+  nav {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px 48px;
+    border-bottom: 1px solid #3d2020;
+  }
+  nav .logo { font-size: 18px; font-weight: 700; color: #fff; letter-spacing: -0.5px; }
+  nav .logo span { color: #f97316; }
+  nav .badge { background: #2a1510; border: 1px solid #5a2d1a; padding: 6px 14px; border-radius: 20px; font-size: 12px; color: #c4956a; }
+
+  /* HERO */
+  .hero {
+    text-align: center;
+    padding: 72px 48px 48px;
+  }
+  .hero .tag {
+    display: inline-block;
+    background: #2a1510;
+    border: 1px solid #f97316;
+    color: #fb923c;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 6px 16px;
+    border-radius: 20px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    margin-bottom: 24px;
+  }
+  .hero h1 {
+    font-size: 48px;
+    font-weight: 800;
+    line-height: 1.1;
+    letter-spacing: -1.5px;
+    color: #fff;
+    margin-bottom: 16px;
+  }
+  .hero h1 span { color: #f97316; }
+  .hero p {
+    font-size: 18px;
+    color: #8a6a5a;
+    max-width: 520px;
+    margin: 0 auto;
+    line-height: 1.6;
+  }
+
+  /* STATS ROW */
+  .stats {
+    display: flex;
+    justify-content: center;
+    gap: 24px;
+    padding: 40px 48px;
+    flex-wrap: wrap;
+  }
+  .stat-card {
+    background: #1e0f0a;
+    border: 1px solid #3d2010;
+    border-radius: 16px;
+    padding: 24px 32px;
+    text-align: center;
+    min-width: 160px;
+  }
+  .stat-card .num {
+    font-size: 36px;
+    font-weight: 800;
+    color: #fff;
+    letter-spacing: -1px;
+  }
+  .stat-card .num.red { color: #f87171; }
+  .stat-card .num.yellow { color: #fbbf24; }
+  .stat-card .label {
+    font-size: 13px;
+    color: #8a5a3a;
+    margin-top: 6px;
+    font-weight: 500;
+  }
+
+  /* SECTION */
+  .section {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 24px 48px;
+  }
+  .section-title {
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: #8a5a3a;
+    margin-bottom: 24px;
+  }
+
+  /* BEFORE / AFTER */
+  .compare {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 0 48px 48px;
+  }
+  .compare-box {
+    background: #1e0f0a;
+    border: 1px solid #3d2010;
+    border-radius: 20px;
+    padding: 32px;
+  }
+  .compare-box.before { border-color: #5a2020; }
+  .compare-box.after  { border-color: #2a4a20; }
+
+  .compare-box h3 {
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    margin-bottom: 24px;
+  }
+  .compare-box.before h3 { color: #f87171; }
+  .compare-box.after  h3 { color: #34d399; }
+
+  .compare-box ul { list-style: none; }
+  .compare-box ul li {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid #3d2010;
+    font-size: 14px;
+    color: #c4956a;
+    line-height: 1.5;
+  }
+  .compare-box ul li:last-child { border-bottom: none; }
+  .compare-box ul li .icon { font-size: 16px; flex-shrink: 0; margin-top: 1px; }
+
+  /* LISTS */
+  .lists-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 0 48px 48px;
+  }
+  .list-card {
+    background: #1e0f0a;
+    border: 1px solid #3d2010;
+    border-radius: 16px;
+    padding: 24px;
+  }
+  .list-card .list-icon { font-size: 28px; margin-bottom: 12px; }
+  .list-card .list-name {
+    font-size: 15px;
+    font-weight: 700;
+    color: #fff;
+    margin-bottom: 6px;
+  }
+  .list-card .list-desc {
+    font-size: 13px;
+    color: #8a5a3a;
+    line-height: 1.5;
+    margin-bottom: 16px;
+  }
+  .list-card .list-tag {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 8px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .list-card.l1 { border-color: #1a3a1a; }
+  .list-card.l1 .list-tag { background: #14532d; color: #4ade80; }
+  .list-card.l2 { border-color: #3a2e1a; }
+  .list-card.l2 .list-tag { background: #451a03; color: #fb923c; }
+  .list-card.l3 { border-color: #3a1a1a; }
+  .list-card.l3 .list-tag { background: #450a0a; color: #f87171; }
+  .list-card.l4 { border-color: #1a2a3a; }
+  .list-card.l4 .list-tag { background: #0c1a3a; color: #60a5fa; }
+
+  /* SMART VIEWS */
+  .views-compare {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 0 48px 48px;
+  }
+  .views-box {
+    background: #1e0f0a;
+    border: 1px solid #3d2010;
+    border-radius: 20px;
+    padding: 28px;
+  }
+  .views-box h3 {
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    margin-bottom: 20px;
+    color: #8a5a3a;
+  }
+  .view-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    margin-bottom: 6px;
+    font-size: 13px;
+  }
+  .view-item.messy { background: #2a1010; color: #7a5040; }
+  .view-item.clean { background: #1a2a10; color: #c4956a; }
+  .view-item.clean .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .view-item.clean.v1 .dot { background: #4ade80; }
+  .view-item.clean.v2 .dot { background: #fb923c; }
+  .view-item.clean.v3 .dot { background: #f87171; }
+  .view-item.clean.v4 .dot { background: #60a5fa; }
+  .more-views { text-align: center; padding: 10px; font-size: 12px; color: #5a3a2a; }
+
+  /* WHAT CHANGES */
+  .changes-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 0 48px 48px;
+  }
+  .change-card {
+    background: #1e0f0a;
+    border: 1px solid #3d2010;
+    border-radius: 16px;
+    padding: 24px;
+  }
+  .change-card .c-icon { font-size: 24px; margin-bottom: 12px; }
+  .change-card h4 { font-size: 15px; font-weight: 700; color: #fff; margin-bottom: 8px; }
+  .change-card p { font-size: 13px; color: #8a5a3a; line-height: 1.6; }
+
+  /* SAFETY */
+  .safety {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 0 48px 80px;
+  }
+  .safety-box {
+    background: #1a1a0a;
+    border: 1px solid #4a4a10;
+    border-radius: 16px;
+    padding: 28px 32px;
+    display: flex;
+    gap: 20px;
+    align-items: flex-start;
+  }
+  .safety-box .s-icon { font-size: 28px; flex-shrink: 0; }
+  .safety-box h4 { font-size: 16px; font-weight: 700; color: #4ade80; margin-bottom: 8px; }
+  .safety-box ul { list-style: none; }
+  .safety-box ul li {
+    font-size: 14px;
+    color: #7a5040;
+    padding: 4px 0;
+    display: flex;
+    gap: 8px;
+  }
+  .safety-box ul li::before { content: '✓'; color: #4ade80; font-weight: 700; }
+
+  /* STATUS MAP */
+  .status-map {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 0 48px 48px;
+  }
+  .status-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 12px 0;
+    border-bottom: 1px solid #1a1a2e;
+    font-size: 14px;
+  }
+  .status-row:last-child { border-bottom: none; }
+  .status-old { color: #7a5040; flex: 1; }
+  .arrow { color: #5a3a2a; font-size: 18px; }
+  .status-new {
+    flex: 1;
+    font-weight: 600;
+    padding: 4px 12px;
+    border-radius: 8px;
+    font-size: 13px;
+    display: inline-block;
+  }
+  .s-l1 { background: #14532d22; color: #4ade80; border: 1px solid #14532d; }
+  .s-l2 { background: #45260322; color: #fb923c; border: 1px solid #7c2d12; }
+  .s-l3 { background: #450a0a22; color: #f87171; border: 1px solid #7f1d1d; }
+  .s-l4 { background: #0c1a3a22; color: #60a5fa; border: 1px solid #1e3a5f; }
+</style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <div class="logo">Sea<span>Cap</span></div>
+  <div class="badge">Close CRM Cleanup Plan</div>
+</nav>
+
+<!-- HERO -->
+<div class="hero">
+  <div class="tag">Internal Plan</div>
+  <h1>Organizing <span>228,398</span> leads<br>into 4 clean lists</h1>
+  <p>Right now Close CRM is a mess. Here's exactly how we clean it — no data deleted, everything organized.</p>
+</div>
+
+<!-- STATS -->
+<div class="stats">
+  <div class="stat-card">
+    <div class="num">228K</div>
+    <div class="label">Total Leads</div>
+  </div>
+  <div class="stat-card">
+    <div class="num red">80+</div>
+    <div class="label">Smart Views (chaos)</div>
+  </div>
+  <div class="stat-card">
+    <div class="num yellow">21</div>
+    <div class="label">Inconsistent Statuses</div>
+  </div>
+  <div class="stat-card">
+    <div class="num red">1000s</div>
+    <div class="label">Duplicate Records</div>
+  </div>
+</div>
+
+<!-- BEFORE / AFTER -->
+<div class="section">
+  <div class="section-title">Before vs After</div>
+</div>
+<div class="compare">
+  <div class="compare-box before">
+    <h3>❌ Right Now</h3>
+    <ul>
+      <li><span class="icon">😵</span> 80+ Smart Views — all named after lead sources (Meridian, PB Lendio, Ovadia, Donny, Hadi...) — impossible to navigate</li>
+      <li><span class="icon">🔀</span> 21 different statuses — no consistency, nobody uses them the same way</li>
+      <li><span class="icon">👥</span> Thousands of duplicates — same business, different formatting (BIG DADDY'S BURGERS + Big Daddys Burgers)</li>
+      <li><span class="icon">🗑️</span> Junk records — email addresses as lead names, completely blank records</li>
+      <li><span class="icon">❓</span> No way to know at a glance who's ready to call, who needs fixing, who's DNC</li>
+    </ul>
+  </div>
+  <div class="compare-box after">
+    <h3>✅ After Cleanup</h3>
+    <ul>
+      <li><span class="icon">🗂️</span> 4 Smart Views — one per list. Open Close, see exactly what you need instantly</li>
+      <li><span class="icon">✅</span> Every lead tagged with a list — List 1, 2, 3, or 4. No ambiguity</li>
+      <li><span class="icon">🧹</span> Duplicates merged — one clean record per business, all history preserved</li>
+      <li><span class="icon">🚮</span> Junk records cleaned up — flagged and removed</li>
+      <li><span class="icon">🚀</span> New leads from the pipeline push directly into the right list automatically</li>
+    </ul>
+  </div>
+</div>
+
+<!-- 4 LISTS -->
+<div class="section">
+  <div class="section-title">The 4 Lists</div>
+</div>
+<div class="lists-grid">
+  <div class="list-card l1">
+    <div class="list-icon">✅</div>
+    <div class="list-name">List 1 — Qualified</div>
+    <div class="list-desc">Has phone + email, passes verification, ready to call or email right now.</div>
+    <span class="list-tag">Ready to work</span>
+  </div>
+  <div class="list-card l2">
+    <div class="list-icon">🔧</div>
+    <div class="list-name">List 2 — Needs Fixing</div>
+    <div class="list-desc">Missing phone, bad email, or failed a check. Each lead shows exactly what's wrong.</div>
+    <span class="list-tag">Fix then promote</span>
+  </div>
+  <div class="list-card l3">
+    <div class="list-icon">🚫</div>
+    <div class="list-name">List 3 — DNC</div>
+    <div class="list-desc">Do Not Contact. Flagged via DNC status or failed email/phone check. Never touch these.</div>
+    <span class="list-tag">Never contact</span>
+  </div>
+  <div class="list-card l4">
+    <div class="list-icon">💰</div>
+    <div class="list-name">List 4 — Funded</div>
+    <div class="list-desc">Already funded deals. Tracked separately for renewals and follow-ups.</div>
+    <span class="list-tag">Closed deals</span>
+  </div>
+</div>
+
+<!-- SMART VIEWS -->
+<div class="section">
+  <div class="section-title">Smart Views — Before vs After</div>
+</div>
+<div class="views-compare">
+  <div class="views-box">
+    <h3>❌ Current — 80+ Views</h3>
+    <div class="view-item messy">📡 Meridian Leads (10/19)</div>
+    <div class="view-item messy">📡 Meridian Leads ALL</div>
+    <div class="view-item messy">PB Lendio - Updated</div>
+    <div class="view-item messy">PB Lendio New</div>
+    <div class="view-item messy">Ovadia live leads 0-10 days</div>
+    <div class="view-item messy">donny call</div>
+    <div class="view-item messy">Hadi leads updated</div>
+    <div class="view-item messy">Hadi aged list</div>
+    <div class="view-item messy">AMM Jasper</div>
+    <div class="view-item messy">AMM Citrine</div>
+    <div class="more-views">+ 70 more...</div>
+  </div>
+  <div class="views-box">
+    <h3>✅ After — 4 Clean Views</h3>
+    <div class="view-item clean v1"><div class="dot"></div> ✅ List 1 — Qualified</div>
+    <div class="view-item clean v2"><div class="dot"></div> 🔧 List 2 — Needs Fixing</div>
+    <div class="view-item clean v3"><div class="dot"></div> 🚫 List 3 — DNC</div>
+    <div class="view-item clean v4"><div class="dot"></div> 💰 List 4 — Funded</div>
+  </div>
+</div>
+
+<!-- STATUS MAPPING -->
+<div class="section">
+  <div class="section-title">How Existing Statuses Map to Lists</div>
+</div>
+<div class="status-map">
+  <div class="status-row">
+    <div class="status-old">🆕 New / Uncontacted — has phone + email</div>
+    <div class="arrow">→</div>
+    <span class="status-new s-l1">List 1 — Qualified</span>
+  </div>
+  <div class="status-row">
+    <div class="status-old">☎️ Contact Attempted</div>
+    <div class="arrow">→</div>
+    <span class="status-new s-l1">List 1 — Qualified</span>
+  </div>
+  <div class="status-row">
+    <div class="status-old">✅ Interested - Follow Up</div>
+    <div class="arrow">→</div>
+    <span class="status-new s-l1">List 1 — Qualified</span>
+  </div>
+  <div class="status-row">
+    <div class="status-old">📝 App Sent / App + Statements Received</div>
+    <div class="arrow">→</div>
+    <span class="status-new s-l1">List 1 — Qualified</span>
+  </div>
+  <div class="status-row">
+    <div class="status-old">🔥 Follow Up Hot / Warm / Cool</div>
+    <div class="arrow">→</div>
+    <span class="status-new s-l1">List 1 — Qualified</span>
+  </div>
+  <div class="status-row">
+    <div class="status-old">🟡 Not Ready / Follow-Up Needed</div>
+    <div class="arrow">→</div>
+    <span class="status-new s-l2">List 2 — Needs Fixing</span>
+  </div>
+  <div class="status-row">
+    <div class="status-old">⚠️ Invalid Contact Info</div>
+    <div class="arrow">→</div>
+    <span class="status-new s-l2">List 2 — Needs Fixing</span>
+  </div>
+  <div class="status-row">
+    <div class="status-old">🆕 New / Uncontacted — missing phone or email</div>
+    <div class="arrow">→</div>
+    <span class="status-new s-l2">List 2 — Needs Fixing</span>
+  </div>
+  <div class="status-row">
+    <div class="status-old">🔴 Not Interested - DNC</div>
+    <div class="arrow">→</div>
+    <span class="status-new s-l3">List 3 — DNC</span>
+  </div>
+  <div class="status-row">
+    <div class="status-old">❌ Disqualified – Not Eligible</div>
+    <div class="arrow">→</div>
+    <span class="status-new s-l3">List 3 — DNC</span>
+  </div>
+  <div class="status-row">
+    <div class="status-old">🟢 Funded - SEACAP</div>
+    <div class="arrow">→</div>
+    <span class="status-new s-l4">List 4 — Funded</span>
+  </div>
+  <div class="status-row">
+    <div class="status-old">💰 Approved Not Funded / Funded Elsewhere</div>
+    <div class="arrow">→</div>
+    <span class="status-new s-l4">List 4 — Funded</span>
+  </div>
+</div>
+
+<!-- WHAT CHANGES -->
+<div class="section">
+  <div class="section-title">What We're Doing</div>
+</div>
+<div class="changes-grid">
+  <div class="change-card">
+    <div class="c-icon">🏷️</div>
+    <h4>Tag Every Lead</h4>
+    <p>Add a custom field "Adam List" to every lead in Close. Script runs through all 228k, assigns List 1/2/3/4 based on their data and status.</p>
+  </div>
+  <div class="change-card">
+    <div class="c-icon">🧹</div>
+    <h4>Merge Duplicates</h4>
+    <p>Find every duplicate by phone and email. Merge them into one clean record. All call history, notes, and activity preserved on the merged record.</p>
+  </div>
+  <div class="change-card">
+    <div class="c-icon">🗂️</div>
+    <h4>Replace Smart Views</h4>
+    <p>Delete all 80+ source-based Smart Views. Create 4 clean ones — one per list. Each shows name, phone, email, status, last activity.</p>
+  </div>
+  <div class="change-card">
+    <div class="c-icon">🤖</div>
+    <h4>Automate Going Forward</h4>
+    <p>Every new CSV dropped into the pipeline gets cleaned and pushed directly into the right list in Close. No manual work ever again.</p>
+  </div>
+  <div class="change-card">
+    <div class="c-icon">🗑️</div>
+    <h4>Remove Junk</h4>
+    <p>Flag and remove records where the "name" is just an email address, leads with zero contact info, and fully blank records.</p>
+  </div>
+  <div class="change-card">
+    <div class="c-icon">📊</div>
+    <h4>Standardize Columns</h4>
+    <p>Every Smart View shows the same clean columns — Business Name, Contact, Phone, Email, List, Status, Last Activity. Consistent across all 4 views.</p>
+  </div>
+</div>
+
+<!-- SAFETY -->
+<div class="safety">
+  <div class="safety-box">
+    <div class="s-icon">🛡️</div>
+    <div>
+      <h4>Nothing gets lost</h4>
+      <ul>
+        <li>Full backup of all 228k leads pulled locally before anything runs</li>
+        <li>No leads deleted — only tagged and organized</li>
+        <li>Duplicates reviewed before merging — nothing merged without approval</li>
+        <li>All call history, notes, emails, tasks preserved on every record</li>
+        <li>If a tag is wrong — remove it and the lead goes back to exactly how it was</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
