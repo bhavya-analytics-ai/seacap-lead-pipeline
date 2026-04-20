@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 VANILLASOFT_WEB_LEAD_ID = os.getenv("VANILLASOFT_WEB_LEAD_ID", "").strip()
-VANILLASOFT_URL = f"https://new.vanillasoft.net/post.aspx?id={VANILLASOFT_WEB_LEAD_ID}"
+VANILLASOFT_URL = f"https://s2.vanillasoft.net/web/post.aspx?id={VANILLASOFT_WEB_LEAD_ID}"
 
 OUTPUT_DIR  = Path(__file__).parents[1] / "output"
 QUEUE_PATH  = Path(__file__).parent / "failed_vanilla_pushes.jsonl"
