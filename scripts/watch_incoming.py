@@ -75,11 +75,18 @@ def run_pipeline(filepath: Path):
                     break
             log_to_supabase(filepath.name, summary, "success")
 
-            # Push to Close CRM
+            # Push to CRM — Close or VanillaSoft based on PUSH_TO env var
             stem = filepath.stem
-            push_script = BASE_DIR / "scripts" / "close_push_leads.py"
+            push_to = os.getenv("PUSH_TO", "close").strip().lower()
+            if push_to == "vanillasoft":
+                push_script = BASE_DIR / "scripts" / "vanillasoft_push_leads.py"
+                crm_name = "VanillaSoft"
+            else:
+                push_script = BASE_DIR / "scripts" / "close_push_leads.py"
+                crm_name = "Close CRM"
+
             if push_script.exists():
-                log.info(f"Pushing to Close CRM: {stem}")
+                log.info(f"Pushing to {crm_name}: {stem}")
                 push_result = subprocess.run(
                     [sys.executable, str(push_script), stem],
                     capture_output=True,
@@ -87,9 +94,9 @@ def run_pipeline(filepath: Path):
                     timeout=3600
                 )
                 if push_result.returncode == 0:
-                    log.info(f"Close CRM push complete: {push_result.stdout.strip()}")
+                    log.info(f"{crm_name} push complete: {push_result.stdout.strip()}")
                 else:
-                    log.error(f"Close CRM push failed: {push_result.stderr.strip()}")
+                    log.error(f"{crm_name} push failed: {push_result.stderr.strip()}")
         else:
             log.error(f"Pipeline failed for: {filepath.name}")
             if result.stderr:

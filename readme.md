@@ -1,0 +1,1 @@
+venv-source /Users/ompandya/seacap-lead-pipeline/lead_pipeline/bin/activate
