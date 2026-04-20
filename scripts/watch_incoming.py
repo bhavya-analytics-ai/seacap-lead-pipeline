@@ -75,28 +75,16 @@ def run_pipeline(filepath: Path):
                     break
             log_to_supabase(filepath.name, summary, "success")
 
-            # Push to CRM — Close or VanillaSoft based on PUSH_TO env var
+            # Upload files + notify Adam via WhatsApp
             stem = filepath.stem
-            push_to = os.getenv("PUSH_TO", "close").strip().lower()
-            if push_to == "vanillasoft":
-                push_script = BASE_DIR / "scripts" / "vanillasoft_push_leads.py"
-                crm_name = "VanillaSoft"
-            else:
-                push_script = BASE_DIR / "scripts" / "close_push_leads.py"
-                crm_name = "Close CRM"
+            try:
+                from whatsapp_notify import notify
+                notify(stem, summary)
+            except Exception as e:
+                log.warning(f"WhatsApp notify failed (non-fatal): {e}")
 
-            if push_script.exists():
-                log.info(f"Pushing to {crm_name}: {stem}")
-                push_result = subprocess.run(
-                    [sys.executable, str(push_script), stem],
-                    capture_output=True,
-                    text=True,
-                    timeout=3600
-                )
-                if push_result.returncode == 0:
-                    log.info(f"{crm_name} push complete: {push_result.stdout.strip()}")
-                else:
-                    log.error(f"{crm_name} push failed: {push_result.stderr.strip()}")
+            # Windows popup — person on computer can also approve
+            show_popup(stem, summary)
         else:
             log.error(f"Pipeline failed for: {filepath.name}")
             if result.stderr:
@@ -119,6 +107,90 @@ def run_pipeline(filepath: Path):
         shutil.move(str(filepath), str(dest))
         log.info(f"Moved to processed/: {dest.name}")
         log.info("-" * 60)
+
+# ============================================================
+# POPUP + LOCAL PUSH
+# ============================================================
+def push_from_local(stem: str, choice: str):
+    """Push leads to CRM based on choice: 1=Close, 2=VanillaSoft, 3=Both."""
+    targets = []
+    if choice in ["1", "3"]:
+        targets.append(("close_push_leads.py", "Close CRM"))
+    if choice in ["2", "3"]:
+        targets.append(("vanillasoft_push_leads.py", "VanillaSoft"))
+
+    for script_name, crm_name in targets:
+        push_script = BASE_DIR / "scripts" / script_name
+        if not push_script.exists():
+            log.warning(f"{script_name} not found — skipping {crm_name}")
+            continue
+        log.info(f"Pushing to {crm_name}: {stem}")
+        result = subprocess.run(
+            [sys.executable, str(push_script), stem],
+            capture_output=True, text=True, timeout=3600
+        )
+        if result.returncode == 0:
+            log.info(f"{crm_name} push complete")
+        else:
+            log.error(f"{crm_name} push failed: {result.stderr.strip()}")
+
+
+def show_popup(stem: str, summary: dict):
+    """Show Windows popup asking where to push. Non-blocking thread."""
+    import threading
+
+    def _popup():
+        try:
+            import tkinter as tk
+            from tkinter import messagebox
+
+            qualified = summary.get("list1_qualified", 0)
+            needs_fix = summary.get("list2_needs_fixing", 0)
+            dnc       = summary.get("list3_dnc", 0)
+            total     = summary.get("total_leads", 0)
+
+            root = tk.Tk()
+            root.withdraw()
+
+            msg = (
+                f"Pipeline complete: {stem}\n\n"
+                f"✅ Qualified:  {qualified:,}\n"
+                f"🔧 Needs Fix:  {needs_fix:,}\n"
+                f"🚫 DNC:        {dnc:,}\n"
+                f"📊 Total:      {total:,}\n\n"
+                f"Push to Close CRM?\n"
+                f"(Adam can also approve via WhatsApp)"
+            )
+
+            # Ask Yes/No for Close first
+            push_close = messagebox.askyesno("SeaCap Lead Pipeline", msg)
+
+            # Ask Yes/No for VanillaSoft
+            push_vanilla = messagebox.askyesno(
+                "SeaCap Lead Pipeline",
+                f"Also push to VanillaSoft?"
+            )
+
+            root.destroy()
+
+            if push_close and push_vanilla:
+                choice = "3"
+            elif push_close:
+                choice = "1"
+            elif push_vanilla:
+                choice = "2"
+            else:
+                log.info("Local popup: push skipped by user")
+                return
+
+            log.info(f"Local popup: pushing choice={choice}")
+            push_from_local(stem, choice)
+
+        except Exception as e:
+            log.warning(f"Popup failed (non-fatal): {e}")
+
+    threading.Thread(target=_popup, daemon=True).start()
+
 
 # ============================================================
 # FILE WATCHER
