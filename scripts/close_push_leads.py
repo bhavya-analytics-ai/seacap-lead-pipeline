@@ -24,22 +24,27 @@ api = Client(os.getenv('CLOSE_API_KEY'))
 
 OUTPUT_DIR  = Path(__file__).parents[1] / 'output'
 QUEUE_PATH  = Path(__file__).parent / 'failed_close_pushes.jsonl'
-ADAM_LIST_FIELD_ID = 'cf_XU1qHTFDucHvqGhXRwkbMtzj9v0F2nCZGes7N7rqID6'
 RETRY_DELAYS = [1, 5, 15]
 MAX_QUEUE_ATTEMPTS = 10
 
+# Custom field IDs
+ADAM_LIST_FIELD_ID = 'cf_XU1qHTFDucHvqGhXRwkbMtzj9v0F2nCZGes7N7rqID6'  # "Adam List"
+BATCH_FIELD_ID     = 'cf_CCz7ZqoljRNXfg0A4w9zLAQAg0PJNGOY6hK9gncvOnO'  # "Batch Number"
+
+# Human-readable list labels (show in Close as "Adam List" value)
 LIST_MAP = {
-    'list1_qualified':    'Pending 1',
-    'list2_needs_fixing': 'Pending 2',
-    'list3_dnc':          'Pending 3',
-    'list4_funded':       'Pending 4',
+    'list1_qualified':    'SeaCap - Qualified',
+    'list2_needs_fixing': 'SeaCap - Needs Fixing',
+    'list3_dnc':          'SeaCap - DNC',
+    'list4_funded':       'SeaCap - Funded',
 }
 
-PROMOTE_MAP = {
-    'Pending 1': 'List 1',
-    'Pending 2': 'List 2',
-    'Pending 3': 'List 3',
-    'Pending 4': 'List 4',
+# Lead status per list — set on every push so new leads float to top
+STATUS_MAP = {
+    'SeaCap - Qualified':    'stat_KAxW4CxmwBohKJChIIkIlLK9jKxLiTBDkERQo3Ra5jh',  # 🆕 New / Uncontacted
+    'SeaCap - Needs Fixing': 'stat_9fDhBB6VEvWXtHGZ5FP3WxBKpAWS3Sm5es5Ggpaw8Pj',  # ⚠️ Invalid Contact Info
+    'SeaCap - DNC':          'stat_voUtLGcfL5bTcw00K6Hxwe6efhcP0M8s7a8dH3dXCij',  # 🔴 Not Interested - DNC
+    'SeaCap - Funded':       'stat_Tzu12vilJKdz1hrqghOOWVih4GpmNyJrqur5J439GUj',  # 🟢 Funded - SEACAP
 }
 
 # ── RETRY WRAPPER ─────────────────────────────────────────────
@@ -78,7 +83,7 @@ def replay_queue():
             entry["attempts"] = entry.get("attempts", 0) + 1
             p = entry["payload"]
             result, err = _with_retries(lambda: find_or_create_lead(
-                p["row"], p["list_value"], p["flag_reason"]
+                p["row"], p["list_value"], p["flag_reason"], batch=p.get("batch", "")
             ))
             if result is None:
                 if entry["attempts"] < MAX_QUEUE_ATTEMPTS:
@@ -96,11 +101,12 @@ def replay_queue():
         QUEUE_PATH.unlink(missing_ok=True)
 
 # ── CORE: PUSH ONE LEAD ───────────────────────────────────────
-def find_or_create_lead(row, list_value, flag_reason=""):
+def find_or_create_lead(row, list_value, flag_reason="", batch=""):
     """
     Build a Close lead from a cleaned row.
     Pushes ALL phones/emails/addresses with labels.
     Searches by email then phone — updates if found, creates if not.
+    Always sets status + Adam List + Batch Number so new leads are visible.
     """
     company = str(row.get('Company') or row.get('Business Name') or '').strip()
     first   = str(row.get('First Name') or row.get('First') or '').strip()
@@ -169,9 +175,15 @@ def find_or_create_lead(row, list_value, flag_reason=""):
         if addr:
             addresses.append(f"{addr} [{addr_label}]" if addr_label else addr)
 
+    status_id = STATUS_MAP.get(list_value)
     lead_data = {
-        'custom': {ADAM_LIST_FIELD_ID: list_value},
+        'custom': {
+            ADAM_LIST_FIELD_ID: list_value,
+            BATCH_FIELD_ID:     batch,
+        },
     }
+    if status_id:
+        lead_data['status_id'] = status_id
     if addresses:
         lead_data['addresses'] = [{'address_1': a, 'type': 'business'} for a in addresses]
 
@@ -209,7 +221,7 @@ def push_to_close(stem):
             row_dict = row.to_dict()
             flag_reason = str(row_dict.get('SeaCap_Flag_Reason', ''))
             try:
-                result, action = find_or_create_lead(row_dict, list_value, flag_reason)
+                result, action = find_or_create_lead(row_dict, list_value, flag_reason, batch=stem)
                 if action == 'created':
                     total_created += 1
                 elif action == 'updated':
@@ -218,7 +230,7 @@ def push_to_close(stem):
                     total_skipped += 1
             except Exception as e:
                 total_queued += 1
-                _enqueue({"row": row_dict, "list_value": list_value, "flag_reason": flag_reason})
+                _enqueue({"row": row_dict, "list_value": list_value, "flag_reason": flag_reason, "batch": stem})
                 if total_queued <= 5:
                     print(f'  QUEUED row {i} ({row_dict.get("Company", "?")}): {e}', flush=True)
 
