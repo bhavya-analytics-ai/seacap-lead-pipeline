@@ -164,3 +164,11 @@ def push_to_vanillasoft(stem):
     print(f"  Pushed  : {total_ok:,}")
     print(f"  Skipped : {total_skipped:,}")
     print(f"  Queued  : {total_queued:,}  (will retry on next run)")
+
+
+if __name__ == '__main__':
+    import sys
+    if len(sys.argv) < 2:
+        print('Usage: python vanillasoft_push_leads.py <stem>')
+        sys.exit(1)
+    push_to_vanillasoft(sys.argv[1])
