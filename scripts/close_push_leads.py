@@ -135,28 +135,6 @@ def find_or_create_lead(row, list_value, flag_reason="", batch=""):
     if not company and not emails and not phones:
         return None, 'skipped'
 
-    # Search existing lead
-    existing_id = None
-    if emails:
-        result, err = _with_retries(lambda: api.get('lead/', params={
-            '_limit': 1,
-            'query': f'email:"{emails[0]["email"]}"',
-            '_fields': 'id,display_name,custom'
-        }))
-        if result and result.get('data'):
-            existing_id = result['data'][0]['id']
-
-    if not existing_id and phones:
-        digits = ''.join(filter(str.isdigit, phones[0]["phone"]))[-10:]
-        if len(digits) >= 7:
-            result, err = _with_retries(lambda: api.get('lead/', params={
-                '_limit': 1,
-                'query': f'phone:"{digits}"',
-                '_fields': 'id,display_name,custom'
-            }))
-            if result and result.get('data'):
-                existing_id = result['data'][0]['id']
-
     contact_name = f'{first} {last}'.strip() or company
     contact = {'name': contact_name}
     if emails:
@@ -165,7 +143,6 @@ def find_or_create_lead(row, list_value, flag_reason="", batch=""):
         contact['phones'] = phones
 
     # Build addresses
-    # n=1 uses renamed cols ("Best Address" / "Address Status"), n=2-4 use SeaCap_ names
     addresses = []
     addr_col_map = {1: ('Best Address', 'Address Status')}
     for n in range(1, 5):
@@ -177,6 +154,8 @@ def find_or_create_lead(row, list_value, flag_reason="", batch=""):
 
     status_id = STATUS_MAP.get(list_value)
     lead_data = {
+        'name':     company or contact_name,
+        'contacts': [contact],
         'custom': {
             ADAM_LIST_FIELD_ID: list_value,
             BATCH_FIELD_ID:     batch,
@@ -187,22 +166,15 @@ def find_or_create_lead(row, list_value, flag_reason="", batch=""):
     if addresses:
         lead_data['addresses'] = [{'address_1': a, 'type': 'business'} for a in addresses]
 
-    if existing_id:
-        _with_retries(lambda: api.put(f'lead/{existing_id}', lead_data))
-        return existing_id, 'updated'
-    else:
-        lead_data['name'] = company or contact_name
-        lead_data['contacts'] = [contact]
-        result, err = _with_retries(lambda: api.post('lead/', lead_data))
-        if result:
-            return result['id'], 'created'
-        raise Exception(err or "Unknown error creating lead")
+    result, err = _with_retries(lambda: api.post('lead/', lead_data))
+    if result:
+        return result['id'], 'created'
+    raise Exception(err or "Unknown error creating lead")
 
 
 # ── MAIN PUSH ─────────────────────────────────────────────────
 def push_to_close(stem):
     total_created = 0
-    total_updated = 0
     total_skipped = 0
     total_queued  = 0
 
@@ -224,8 +196,6 @@ def push_to_close(stem):
                 result, action = find_or_create_lead(row_dict, list_value, flag_reason, batch=stem)
                 if action == 'created':
                     total_created += 1
-                elif action == 'updated':
-                    total_updated += 1
                 elif action is None:
                     total_skipped += 1
             except Exception as e:
@@ -239,7 +209,6 @@ def push_to_close(stem):
 
     print(f'\n✅ Done pushing to Close:')
     print(f'  Created : {total_created:,}')
-    print(f'  Updated : {total_updated:,}')
     print(f'  Skipped : {total_skipped:,}')
     print(f'  Queued  : {total_queued:,}  (will retry on next run)')
 
