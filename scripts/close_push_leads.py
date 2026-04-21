@@ -28,23 +28,22 @@ RETRY_DELAYS = [1, 5, 15]
 MAX_QUEUE_ATTEMPTS = 10
 
 # Custom field IDs
-ADAM_LIST_FIELD_ID = 'cf_XU1qHTFDucHvqGhXRwkbMtzj9v0F2nCZGes7N7rqID6'  # "Adam List"
-BATCH_FIELD_ID     = 'cf_CCz7ZqoljRNXfg0A4w9zLAQAg0PJNGOY6hK9gncvOnO'  # "Batch Number"
+ADAM_LIST_FIELD_ID = 'cf_XU1qHTFDucHvqGhXRwkbMtzj9v0F2nCZGes7N7rqID6'  # "Adam List" — choices field
 
-# Human-readable list labels (show in Close as "Adam List" value)
+# Valid choices for Adam List: Pending 1/2/3/4 (pipeline inbox) → List 1/2/3/4 (after rep works them)
 LIST_MAP = {
-    'list1_qualified':    'SeaCap - Qualified',
-    'list2_needs_fixing': 'SeaCap - Needs Fixing',
-    'list3_dnc':          'SeaCap - DNC',
-    'list4_funded':       'SeaCap - Funded',
+    'list1_qualified':    'Pending 1',
+    'list2_needs_fixing': 'Pending 2',
+    'list3_dnc':          'Pending 3',
+    'list4_funded':       'Pending 4',
 }
 
-# Lead status per list — set on every push so new leads float to top
+# Lead status per list — set on every push so new leads are visible
 STATUS_MAP = {
-    'SeaCap - Qualified':    'stat_KAxW4CxmwBohKJChIIkIlLK9jKxLiTBDkERQo3Ra5jh',  # 🆕 New / Uncontacted
-    'SeaCap - Needs Fixing': 'stat_9fDhBB6VEvWXtHGZ5FP3WxBKpAWS3Sm5es5Ggpaw8Pj',  # ⚠️ Invalid Contact Info
-    'SeaCap - DNC':          'stat_voUtLGcfL5bTcw00K6Hxwe6efhcP0M8s7a8dH3dXCij',  # 🔴 Not Interested - DNC
-    'SeaCap - Funded':       'stat_Tzu12vilJKdz1hrqghOOWVih4GpmNyJrqur5J439GUj',  # 🟢 Funded - SEACAP
+    'Pending 1': 'stat_KAxW4CxmwBohKJChIIkIlLK9jKxLiTBDkERQo3Ra5jh',  # 🆕 New / Uncontacted
+    'Pending 2': 'stat_9fDhBB6VEvWXtHGZ5FP3WxBKpAWS3Sm5es5Ggpaw8Pj',  # ⚠️ Invalid Contact Info
+    'Pending 3': 'stat_voUtLGcfL5bTcw00K6Hxwe6efhcP0M8s7a8dH3dXCij',  # 🔴 Not Interested - DNC
+    'Pending 4': 'stat_Tzu12vilJKdz1hrqghOOWVih4GpmNyJrqur5J439GUj',  # 🟢 Funded - SEACAP
 }
 
 # ── RETRY WRAPPER ─────────────────────────────────────────────
@@ -83,7 +82,7 @@ def replay_queue():
             entry["attempts"] = entry.get("attempts", 0) + 1
             p = entry["payload"]
             result, err = _with_retries(lambda: find_or_create_lead(
-                p["row"], p["list_value"], p["flag_reason"], batch=p.get("batch", "")
+                p["row"], p["list_value"], p["flag_reason"]
             ))
             if result is None:
                 if entry["attempts"] < MAX_QUEUE_ATTEMPTS:
@@ -101,12 +100,11 @@ def replay_queue():
         QUEUE_PATH.unlink(missing_ok=True)
 
 # ── CORE: PUSH ONE LEAD ───────────────────────────────────────
-def find_or_create_lead(row, list_value, flag_reason="", batch=""):
+def find_or_create_lead(row, list_value, flag_reason=""):
     """
     Build a Close lead from a cleaned row.
-    Pushes ALL phones/emails/addresses with labels.
-    Searches by email then phone — updates if found, creates if not.
-    Always sets status + Adam List + Batch Number so new leads are visible.
+    Always creates new — no duplicate search (too slow on 218k leads).
+    Sets Adam List + status on every lead so new batch is visible immediately.
     """
     company = str(row.get('Company') or row.get('Business Name') or '').strip()
     first   = str(row.get('First Name') or row.get('First') or '').strip()
@@ -156,10 +154,7 @@ def find_or_create_lead(row, list_value, flag_reason="", batch=""):
     lead_data = {
         'name':     company or contact_name,
         'contacts': [contact],
-        'custom': {
-            ADAM_LIST_FIELD_ID: list_value,
-            BATCH_FIELD_ID:     batch,
-        },
+        'custom': {ADAM_LIST_FIELD_ID: list_value},
     }
     if status_id:
         lead_data['status_id'] = status_id
@@ -193,7 +188,7 @@ def push_to_close(stem):
             row_dict = row.to_dict()
             flag_reason = str(row_dict.get('SeaCap_Flag_Reason', ''))
             try:
-                result, action = find_or_create_lead(row_dict, list_value, flag_reason, batch=stem)
+                result, action = find_or_create_lead(row_dict, list_value, flag_reason)
                 if action == 'created':
                     total_created += 1
                 elif action is None:
