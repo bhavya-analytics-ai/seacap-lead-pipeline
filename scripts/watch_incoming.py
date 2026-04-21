@@ -33,15 +33,27 @@ PROCESSED_MAX_DAYS = 30
 # ============================================================
 # LOGGING
 # ============================================================
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s  %(levelname)s  %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(Path(__file__).parent / "pipeline.log", encoding="utf-8"),
-    ]
-)
+class ErrorHighlightFormatter(logging.Formatter):
+    """Normal lines: timestamp + level + msg. Errors: big visible block."""
+    NORMAL_FMT = "%(asctime)s  %(levelname)-7s  %(message)s"
+    ERROR_FMT  = "\n%(asctime)s  ❌ ERROR ❌\n  %(message)s\n"
+
+    def format(self, record):
+        if record.levelno >= logging.ERROR:
+            self._style._fmt = self.ERROR_FMT
+        else:
+            self._style._fmt = self.NORMAL_FMT
+        return super().format(record)
+
+_formatter = ErrorHighlightFormatter(datefmt="%Y-%m-%d %H:%M:%S")
+
+_console_handler = logging.StreamHandler(sys.stdout)
+_console_handler.setFormatter(_formatter)
+
+_file_handler = logging.FileHandler(Path(__file__).parent / "pipeline.log", encoding="utf-8")
+_file_handler.setFormatter(_formatter)
+
+logging.basicConfig(level=logging.INFO, handlers=[_console_handler, _file_handler])
 log = logging.getLogger(__name__)
 
 # ============================================================
