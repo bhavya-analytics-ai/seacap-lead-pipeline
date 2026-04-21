@@ -18,14 +18,27 @@ COBALT_KEY           = os.getenv("COBALT_API_KEY", "").strip().strip('"')
 TWILIO_SID           = os.getenv("TWILIO_ACCOUNT_SID", "").strip().strip('"')
 TWILIO_TOKEN         = os.getenv("TWILIO_AUTH_TOKEN", "").strip().strip('"')
 
-INPUT_FILE = sys.argv[1] if len(sys.argv) > 1 else str(Path(__file__).parent.parent / "data" / "vanilla_main.csv")
+def _pick_input():
+    if len(sys.argv) > 1:
+        return sys.argv[1]
+    incoming = Path(__file__).parent.parent / "incoming"
+    files = sorted(
+        [f for f in incoming.iterdir() if f.suffix.lower() in {".csv", ".xlsx", ".xls"}],
+        key=lambda f: f.stat().st_mtime, reverse=True
+    )
+    if files:
+        return str(files[0])
+    print("❌ No file in incoming/ and no file passed as argument.")
+    sys.exit(1)
+
+INPUT_FILE = _pick_input()
 OUTPUT_DIR = Path(__file__).parent.parent / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
 STEM = Path(INPUT_FILE).stem
 
 # Set to a number to only process that many rows (saves API credits while testing)
 # Set to None to process the full file
-TEST_MODE = None
+TEST_MODE = 20
 
 # ============================================================
 # COLUMN DETECTION
@@ -470,23 +483,71 @@ def get_list(row):
 def main():
     print(f"\n📂 Loading: {INPUT_FILE}")
 
-    try:
-        fp = str(INPUT_FILE)
+    def looks_like_data_row(row):
+        """True if a row looks like actual data, not column headers."""
+        vals = [str(v).strip() for v in row if str(v).strip() not in ("", "nan")]
+        if not vals:
+            return False
+        # Looks like data if: contains email, phone digits, or pure numbers
+        has_email  = any("@" in v for v in vals)
+        has_phone  = any(re.sub(r'\D','',v).__len__() >= 9 for v in vals)
+        has_number = any(re.match(r'^\d[\d,\.]+$', v) for v in vals)
+        return has_email or has_phone or has_number
+
+    def load_file(fp):
+        """Load CSV or Excel — handles bad encodings, missing headers, junk top rows."""
+        fp = str(fp)
         if fp.endswith((".xlsx", ".xls")):
-            df = pd.read_excel(fp)
+            df = pd.read_excel(fp, header=0)
+            cols = [str(c).strip() for c in df.columns]
+            # If header row looks like actual data (has email/phone), file has no headers
+            if looks_like_data_row(cols):
+                df = pd.read_excel(fp, header=None)
+                df.columns = [f"Col_{i}" for i in range(len(df.columns))]
+            # If all columns are integers, scan for real header row
+            elif all(c.lstrip('-').isdigit() for c in cols):
+                df = pd.read_excel(fp, header=None)
+                for idx in range(min(10, len(df))):
+                    row = df.iloc[idx]
+                    str_count = sum(1 for v in row if isinstance(v, str) and len(str(v).strip()) > 1)
+                    if str_count >= len(df.columns) * 0.5 and not looks_like_data_row(row):
+                        df.columns = [str(v).strip() for v in df.iloc[idx]]
+                        df = df.iloc[idx+1:].reset_index(drop=True)
+                        break
+                else:
+                    df.columns = [f"Col_{i}" for i in range(len(df.columns))]
+            return df
         elif fp.endswith(".csv"):
-            try:
-                df = pd.read_csv(fp, low_memory=False)
-            except UnicodeDecodeError:
-                df = pd.read_csv(fp, low_memory=False, encoding="latin1")
+            for enc in ["utf-8", "latin1", "cp1252"]:
+                try:
+                    df = pd.read_csv(fp, low_memory=False, encoding=enc)
+                    # If all columns are integers, try skipping junk top rows
+                    if all(str(c).strip().lstrip('-').isdigit() for c in df.columns):
+                        for skip in range(1, 10):
+                            df2 = pd.read_csv(fp, low_memory=False, encoding=enc, skiprows=skip)
+                            if not all(str(c).strip().lstrip('-').isdigit() for c in df2.columns):
+                                df = df2
+                                break
+                    return df
+                except UnicodeDecodeError:
+                    continue
+            raise ValueError("Could not decode CSV with any known encoding")
         else:
             print("❌ Unsupported file type.")
             sys.exit(1)
+
+    try:
+        df = load_file(INPUT_FILE)
     except FileNotFoundError:
         print(f"❌ Not found: {INPUT_FILE}")
         sys.exit(1)
+    except Exception as e:
+        print(f"❌ Failed to load file: {e}")
+        sys.exit(1)
 
-    df.columns = [c.strip() for c in df.columns]
+    df.columns = [str(c).strip() for c in df.columns]
+    # Drop fully empty columns and rows
+    df = df.dropna(how="all", axis=1).dropna(how="all", axis=0).reset_index(drop=True)
 
     if TEST_MODE:
         df = df.head(TEST_MODE)
@@ -527,6 +588,38 @@ def main():
     phone_cols   = find_all_cols(df, PHONE_COLS, is_phone_val)
     email_cols   = find_all_cols(df, EMAIL_COLS, is_email_val)
     address_cols = find_all_cols(df, ADDRESS_COLS, is_address_val)
+
+    # Auto-detect Annual Revenue column — large numeric values not already used
+    if not find_col(df, ["Annual Revenue", "AnnualRevenue", "Revenue", "Annual Rev", "Ann Rev"]):
+        already_used = set(phone_cols + email_cols + address_cols + list(col.values()))
+        for c in df.columns:
+            if c in already_used:
+                continue
+            sample = df[c].dropna()
+            if len(sample) == 0:
+                continue
+            try:
+                nums = pd.to_numeric(sample.astype(str).str.replace(',',''), errors='coerce').dropna()
+                if len(nums) >= len(sample) * 0.8 and nums.median() >= 10000:
+                    df = df.rename(columns={c: "Annual Revenue"})
+                    break
+            except Exception:
+                continue
+
+    # Auto-detect Company column for headerless files if not found yet
+    if not col["company"]:
+        already_used = set(phone_cols + email_cols + address_cols + list(col.values()))
+        for c in df.columns:
+            if c in already_used or c == "Annual Revenue":
+                continue
+            sample = df[c].dropna().astype(str)
+            if len(sample) == 0:
+                continue
+            # Company col: mostly strings, many contain LLC/Inc/Corp/Group
+            biz_hits = sample.str.contains(r'\b(llc|inc|corp|ltd|group|services|enterprises)\b', case=False, regex=True).sum()
+            if biz_hits >= len(sample) * 0.3:
+                col["company"] = c
+                break
 
     print(f"\n🔎 Columns detected:")
     for k, v in col.items():
@@ -695,30 +788,41 @@ def main():
         best_phone_name_match = ranked_phones[0]["name_match"] if ranked_phones else "UNKNOWN"
         sc["SeaCap_Name_Match"] = best_phone_name_match
 
-        # Build plain-English flag reason
+        # Build plain-English flag reason — only real problems, not NOT-FOUND
         reasons = []
         if ranked_phones and ranked_phones[0]["label"] == "MISMATCH":
-            reasons.append("Phone 1 belongs to different person — verify before calling")
+            reasons.append("Phone belongs to different person")
         if ranked_phones and ranked_phones[0]["label"] == "VOIP":
-            reasons.append("Phone 1 is VoIP — may be fake")
+            reasons.append("Phone is VoIP")
         if ranked_emails and ranked_emails[0]["label"] == "SPAMTRAP":
-            reasons.append("Email is a spamtrap — do not send")
+            reasons.append("Email is spamtrap")
         if ranked_emails and ranked_emails[0]["label"] == "DISPOSABLE":
-            reasons.append("Email is disposable/temp")
-        if biz_result.get("status") == "VERIFIED-INACTIVE":
-            reasons.append("Business SOS inactive/dissolved")
-        if biz_result.get("status") == "NOT-FOUND":
-            reasons.append("Business not found on Google")
+            reasons.append("Email is disposable")
+        if biz_result.get("status") in ("VERIFIED-INACTIVE", "PERMANENTLY_CLOSED"):
+            reasons.append("Business closed/dissolved")
         if biz_garbage:
             reasons.append(biz_garbage)
-        if not reasons:
-            reasons.append("All checks passed ✓")
-        sc["SeaCap_Flag_Reason"] = " | ".join(reasons)
+        sc["SeaCap_Flag_Reason"] = " | ".join(reasons)  # blank = clean
 
         seacap_rows.append(sc)
 
-        if i % 100 == 0 and i > 0:
-            print(f"   {i:,} / {len(df):,} verified...")
+        # Per-row terminal output
+        row_num   = seacap_rows.__len__()
+        phone_out = f"{sc.get('SeaCap_Phone_1','')} [{sc.get('SeaCap_Phone_1_Status','—')}]" if sc.get('SeaCap_Phone_1') else "❌ no phone"
+        email_out = f"{sc.get('SeaCap_Email_1','')} [{sc.get('SeaCap_Email_1_Status','—')}]" if sc.get('SeaCap_Email_1') else "❌ no email"
+        biz_out   = sc.get('SeaCap_Business_Check', 'UNKNOWN')
+        sos_out   = sc.get('SeaCap_SOS_Check', 'UNKNOWN')
+        flag_out  = sc.get('SeaCap_Flag_Reason', '')
+        print(f"\n[{row_num}] {csv_name or company or 'Unknown'}")
+        print(f"   📞 {phone_out}")
+        print(f"   📧 {email_out}")
+        # Only print business checks if they found something useful
+        if biz_out not in ("NOT-FOUND", "UNKNOWN", ""):
+            print(f"   🏢 Google: {biz_out}")
+        if sos_out not in ("UNKNOWN", "NOT-FOUND", ""):
+            print(f"   🏛  SOS: {sos_out}")
+        if flag_out:
+            print(f"   ⚠️  {flag_out}")
 
     # Merge SeaCap columns into df
     seacap_df = pd.DataFrame(seacap_rows, index=df.index)
@@ -775,14 +879,108 @@ def main():
     df_funded    = df_out[df_out["List"] == "Funded"]
     df_flagged   = df_out[df_out["Duplicate_Flag"].ne("")]
 
-    # Save
+    # ── Rename detected original cols to standard names ──────────────────
+    rename_map = {}
+    if col.get("first")   and col["first"]   != "First Name":  rename_map[col["first"]]   = "First Name"
+    if col.get("last")    and col["last"]     != "Last Name":   rename_map[col["last"]]    = "Last Name"
+    if col.get("company") and col["company"]  != "Company":     rename_map[col["company"]] = "Company"
+    if rename_map:
+        df_out = df_out.rename(columns=rename_map)
+
+    # Rename SeaCap columns to human-readable names
+    df_out = df_out.rename(columns={
+        "SeaCap_Phone_1":         "Best Phone",
+        "SeaCap_Phone_1_Status":  "Phone Status",
+        "SeaCap_Phone_1_Source":  "Phone Found In",
+        "SeaCap_Email_1":         "Best Email",
+        "SeaCap_Email_1_Status":  "Email Status",
+        "SeaCap_Address_1":       "Best Address",
+        "SeaCap_Address_1_Status":"Address Status",
+    })
+
+    # Drop original phone/email/address columns — SeaCap verified versions replace them
+    orig_phone_cols   = [c for c in phone_cols   if c in df_out.columns]
+    orig_email_cols   = [c for c in email_cols   if c in df_out.columns]
+    orig_address_cols = [c for c in address_cols if c in df_out.columns]
+    df_out = df_out.drop(columns=orig_phone_cols + orig_email_cols + orig_address_cols, errors="ignore")
+
+    # Drop SeaCap columns that are entirely empty
+    all_seacap = [c for c in df_out.columns if c.startswith("SeaCap_")]
+    drop_empty = [c for c in all_seacap if df_out[c].replace("", pd.NA).isna().all()]
+    df_out = df_out.drop(columns=drop_empty)
+
+    # Also drop Phone_Found_In — not useful for reps
+    df_out = df_out.drop(columns=["Phone Found In"], errors="ignore")
+
+    # ── Column order ──────────────────────────────────────────────────────
+    # Qualified list: Fix_Reason + Duplicate_Flag at back (usually empty)
+    # Needs Fixing / DNC: Fix_Reason + Duplicate_Flag at front
+    extra_phones = sorted([c for c in df_out.columns if re.match(r"SeaCap_Phone_[2-5]", c)])
+    extra_emails = sorted([c for c in df_out.columns if re.match(r"SeaCap_Email_[2-5]", c)])
+    extra_addrs  = sorted([c for c in df_out.columns if re.match(r"SeaCap_Address_[2-4]", c)])
+    ref_end      = [c for c in ["SeaCap_Business_Check", "SeaCap_SOS_Check",
+                                 "SeaCap_Name_Match", "SeaCap_Flag_Reason",
+                                 "SeaCap_Business_Garbage"] if c in df_out.columns]
+    decision     = [c for c in ["Fix_Reason", "Duplicate_Flag"] if c in df_out.columns]
+    core         = [c for c in ["First Name", "Last Name", "Company", "List",
+                                 "Best Phone", "Phone Status",
+                                 "Best Email", "Email Status",
+                                 "Best Address", "Address Status",
+                                 "Annual Revenue"] if c in df_out.columns]
+    already      = set(core + extra_phones + extra_emails + extra_addrs + ref_end + decision)
+    other_orig   = [c for c in df_out.columns if c not in already]
+
+    def make_ordered(front_decision):
+        base = core + extra_phones + extra_emails + extra_addrs + other_orig + ref_end
+        if front_decision:
+            ordered = decision + base
+        else:
+            ordered = base + decision
+        seen = set()
+        return [c for c in ordered if c in df_out.columns and not (c in seen or seen.add(c))]
+
+    # Re-slice after reorder — apply per-list ordering
+    df_qualified = df_out[df_out["List"] == "Qualified"].copy()
+    df_fixing    = df_out[df_out["List"] == "Needs Fixing"].copy()
+    df_dnc       = df_out[df_out["List"] == "DNC"].copy()
+    df_funded    = df_out[df_out["List"] == "Funded"].copy()
+    df_flagged   = df_out[df_out["Duplicate_Flag"].ne("")].copy()
+
+    df_qualified = df_qualified[make_ordered(front_decision=False)]
+    df_fixing    = df_fixing[make_ordered(front_decision=True)]
+    df_dnc       = df_dnc[make_ordered(front_decision=True)]
+    df_funded    = df_funded[make_ordered(front_decision=False)]
+    df_flagged   = df_flagged[make_ordered(front_decision=True)]
+    df_out       = df_out[make_ordered(front_decision=False)]
+
+    def save_xlsx(df, path):
+        """Save with auto-fit column widths and frozen header row."""
+        from openpyxl.utils import get_column_letter
+        from openpyxl.styles import Font, PatternFill, Alignment
+        with pd.ExcelWriter(str(path), engine="openpyxl") as writer:
+            df.to_excel(writer, index=False, sheet_name="Leads")
+            ws = writer.sheets["Leads"]
+            # Freeze header
+            ws.freeze_panes = "A2"
+            # Bold + grey header
+            header_fill = PatternFill("solid", fgColor="D9D9D9")
+            for cell in ws[1]:
+                cell.font      = Font(bold=True)
+                cell.fill      = header_fill
+                cell.alignment = Alignment(horizontal="center")
+            # Auto-fit widths (cap at 50)
+            for col_idx, col_cells in enumerate(ws.columns, 1):
+                max_len = max((len(str(c.value or "")) for c in col_cells), default=10)
+                ws.column_dimensions[get_column_letter(col_idx)].width = min(max_len + 2, 50)
+
+    # Save — skip empty lists
     print("💾 Saving...")
-    df_out.to_excel(str(OUTPUT_DIR / f"{STEM}_all.xlsx"), index=False)
-    df_qualified.to_excel(str(OUTPUT_DIR / f"{STEM}_list1_qualified.xlsx"), index=False)
-    df_fixing.to_excel(str(OUTPUT_DIR / f"{STEM}_list2_needs_fixing.xlsx"), index=False)
-    df_dnc.to_excel(str(OUTPUT_DIR / f"{STEM}_list3_dnc.xlsx"), index=False)
-    df_funded.to_excel(str(OUTPUT_DIR / f"{STEM}_list4_funded.xlsx"), index=False)
-    df_flagged.to_excel(str(OUTPUT_DIR / f"{STEM}_flagged_for_review.xlsx"), index=False)
+    save_xlsx(df_out, OUTPUT_DIR / f"{STEM}_all.xlsx")
+    if len(df_qualified): save_xlsx(df_qualified, OUTPUT_DIR / f"{STEM}_list1_qualified.xlsx")
+    if len(df_fixing):    save_xlsx(df_fixing,    OUTPUT_DIR / f"{STEM}_list2_needs_fixing.xlsx")
+    if len(df_dnc):       save_xlsx(df_dnc,       OUTPUT_DIR / f"{STEM}_list3_dnc.xlsx")
+    if len(df_funded):    save_xlsx(df_funded,    OUTPUT_DIR / f"{STEM}_list4_funded.xlsx")
+    if len(df_flagged):   save_xlsx(df_flagged,   OUTPUT_DIR / f"{STEM}_flagged_for_review.xlsx")
 
     print("\n" + "="*55)
     print("✅  SUMMARY")
