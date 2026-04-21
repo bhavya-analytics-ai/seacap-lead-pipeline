@@ -606,11 +606,13 @@ def main():
             except Exception:
                 continue
 
-    # Auto-detect Company column — runs always, overrides if better match found
+    # Auto-detect Company column — only if not already found by column name
     already_used = set(phone_cols + email_cols + address_cols)
     already_used.update(v for v in [col.get("first"), col.get("last"), col.get("status"), col.get("source")] if v)
-    best_company_col = col.get("company")
-    best_score = 0
+    # Only auto-detect if no company col found by name
+    found_by_name = find_col(df, COMPANY_COLS)
+    best_company_col = found_by_name or col.get("company")
+    best_score = 1.0 if found_by_name else 0  # if found by name, don't override
     for c in df.columns:
         if c in already_used or c == "Annual Revenue":
             continue
