@@ -628,7 +628,6 @@ def main():
             best_company_col = c
     if best_company_col:
         col["company"] = best_company_col
-                break
 
     print(f"\n🔎 Columns detected:")
     for k, v in col.items():
