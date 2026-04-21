@@ -38,7 +38,7 @@ STEM = Path(INPUT_FILE).stem
 
 # Set to a number to only process that many rows (saves API credits while testing)
 # Set to None to process the full file
-TEST_MODE = 20
+TEST_MODE = None
 
 # ============================================================
 # COLUMN DETECTION

@@ -1,6 +1,6 @@
 @echo off
 setlocal enabledelayedexpansion
-set INSTALL_DIR=%USERPROFILE%\SeaCap\lead-pipeline
+set INSTALL_DIR=C:\SeaCap\lead-pipeline
 set PYTHON_EXE=%INSTALL_DIR%\lead_pipeline\Scripts\python.exe
 set WATCHER_SCRIPT=%INSTALL_DIR%\scripts\watch_incoming.py
 

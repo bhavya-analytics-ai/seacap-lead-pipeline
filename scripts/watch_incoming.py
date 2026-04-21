@@ -50,7 +50,13 @@ _formatter = ErrorHighlightFormatter(datefmt="%Y-%m-%d %H:%M:%S")
 _console_handler = logging.StreamHandler(sys.stdout)
 _console_handler.setFormatter(_formatter)
 
-_file_handler = logging.FileHandler(Path(__file__).parent / "pipeline.log", encoding="utf-8")
+from logging.handlers import RotatingFileHandler
+_file_handler = RotatingFileHandler(
+    Path(__file__).parent / "pipeline.log",
+    maxBytes=5 * 1024 * 1024,  # 5MB per file
+    backupCount=3,              # keep last 3 rotated files
+    encoding="utf-8"
+)
 _file_handler.setFormatter(_formatter)
 
 logging.basicConfig(level=logging.INFO, handlers=[_console_handler, _file_handler])
