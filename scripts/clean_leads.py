@@ -606,19 +606,26 @@ def main():
             except Exception:
                 continue
 
-    # Auto-detect Company column for headerless files if not found yet
-    if not col["company"]:
-        already_used = set(phone_cols + email_cols + address_cols + list(col.values()))
-        for c in df.columns:
-            if c in already_used or c == "Annual Revenue":
-                continue
-            sample = df[c].dropna().astype(str)
-            if len(sample) == 0:
-                continue
-            # Company col: mostly strings, many contain LLC/Inc/Corp/Group
-            biz_hits = sample.str.contains(r'\b(llc|inc|corp|ltd|group|services|enterprises)\b', case=False, regex=True).sum()
-            if biz_hits >= len(sample) * 0.3:
-                col["company"] = c
+    # Auto-detect Company column — runs always, overrides if better match found
+    already_used = set(phone_cols + email_cols + address_cols)
+    already_used.update(v for v in [col.get("first"), col.get("last"), col.get("status"), col.get("source")] if v)
+    best_company_col = col.get("company")
+    best_score = 0
+    for c in df.columns:
+        if c in already_used or c == "Annual Revenue":
+            continue
+        sample = df[c].dropna().astype(str)
+        if len(sample) < 3:
+            continue
+        # Score: how many values look like business names
+        biz_hits  = sample.str.contains(r'\b(llc|inc|corp|ltd|co\.|company|enterprises|group|services|solutions|consulting|trucking|construction|plumbing|electric|mechanical|dental|medical|clinic|salon|repair|painting|roofing|cleaning|logistics|staffing|restaurant|hotel|motel|bakery|florist|landscaping|insurance|realty|agency|studio|academy|institute|foundation|association)\b', case=False, regex=True).sum()
+        # Penalise if it looks like a name column (short words, no business keywords)
+        score = biz_hits / max(len(sample), 1)
+        if score > best_score and score >= 0.2:
+            best_score = score
+            best_company_col = c
+    if best_company_col:
+        col["company"] = best_company_col
                 break
 
     print(f"\n🔎 Columns detected:")
