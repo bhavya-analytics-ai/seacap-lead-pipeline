@@ -14,6 +14,7 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")   # repo root
 
 SUPABASE_URL  = os.getenv("SUPABASE_URL", "").strip().strip('"').strip("'").strip()
 SUPABASE_KEY  = os.getenv("SUPABASE_ANON_KEY", "").strip().strip('"').strip("'").strip()
+PUSH_TO       = os.getenv("PUSH_TO", "").strip().lower()  # "close", "vanillasoft", or "both"
 
 # ============================================================
 # CONFIGURATION
@@ -93,16 +94,29 @@ def run_pipeline(filepath: Path):
                     break
             log_to_supabase(filepath.name, summary, "success")
 
-            # Upload files + notify Adam via WhatsApp
             stem = filepath.stem
+
+            # Auto-push to CRM based on PUSH_TO env var
+            pushed_to = []
+            if PUSH_TO in ("close", "both"):
+                try:
+                    push_from_local(stem, "1")
+                    pushed_to.append("Close CRM")
+                except Exception as e:
+                    log.error(f"Close push failed: {e}")
+            if PUSH_TO in ("vanillasoft", "both"):
+                try:
+                    push_from_local(stem, "2")
+                    pushed_to.append("VanillaSoft")
+                except Exception as e:
+                    log.error(f"VanillaSoft push failed: {e}")
+
+            # SMS notification — sent after push
             try:
                 from whatsapp_notify import notify
-                notify(stem, summary)
+                notify(stem, summary, pushed_to=pushed_to)
             except Exception as e:
-                log.warning(f"WhatsApp notify failed (non-fatal): {e}")
-
-            # Windows popup — person on computer can also approve
-            show_popup(stem, summary)
+                log.warning(f"SMS notify failed (non-fatal): {e}")
         else:
             log.error(f"❌ PIPELINE FAILED for: {filepath.name}")
             # Show clean error — last non-empty line of stderr

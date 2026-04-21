@@ -63,7 +63,7 @@ def upload_excel_files(stem: str) -> bool:
     return all_ok
 
 
-def send_sms(stem: str, summary: dict) -> bool:
+def send_sms(stem: str, summary: dict, pushed_to: list = None) -> bool:
     if not TWILIO_SID or not TWILIO_TOKEN:
         log.warning("Twilio keys not set — SMS skipped")
         return False
@@ -80,6 +80,11 @@ def send_sms(stem: str, summary: dict) -> bool:
     funded    = summary.get("list4_funded", 0)
     total     = summary.get("total_leads", 0)
 
+    if pushed_to:
+        push_line = f"Pushed to: {', '.join(pushed_to)}"
+    else:
+        push_line = "Not pushed to any CRM"
+
     message = (
         f"SeaCap Lead Pipeline\n"
         f"Batch: {stem}\n\n"
@@ -88,10 +93,7 @@ def send_sms(stem: str, summary: dict) -> bool:
         f"DNC: {dnc:,}\n"
         f"Funded: {funded:,}\n"
         f"Total: {total:,}\n\n"
-        f"Reply to push:\n"
-        f"1 = Close CRM\n"
-        f"2 = VanillaSoft\n"
-        f"3 = Both"
+        f"{push_line}"
     )
 
     try:
@@ -112,7 +114,7 @@ def send_sms(stem: str, summary: dict) -> bool:
         return False
 
 
-def notify(stem: str, summary: dict):
+def notify(stem: str, summary: dict, pushed_to: list = None):
     log.info("Sending notification...")
     upload_excel_files(stem)
-    send_sms(stem, summary)
+    send_sms(stem, summary, pushed_to=pushed_to)

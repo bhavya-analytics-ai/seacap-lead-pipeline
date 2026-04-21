@@ -102,24 +102,27 @@ def find_or_create_lead(row, list_value, flag_reason=""):
     Pushes ALL phones/emails/addresses with labels.
     Searches by email then phone — updates if found, creates if not.
     """
-    company = str(row.get('_company_clean') or row.get('Company') or row.get('Business Name') or '').strip()
-    first   = str(row.get('_first_clean') or row.get('First Name') or row.get('First') or '').strip()
-    last    = str(row.get('_last_clean') or row.get('Last Name') or row.get('Last') or '').strip()
+    company = str(row.get('Company') or row.get('Business Name') or '').strip()
+    first   = str(row.get('First Name') or row.get('First') or '').strip()
+    last    = str(row.get('Last Name') or row.get('Last') or '').strip()
 
     # Collect all phones with labels
+    # n=1 uses renamed cols ("Best Phone" / "Phone Status"), n=2-5 use SeaCap_ names
     phones = []
+    phone_col_map = {1: ('Best Phone', 'Phone Status')}
     for n in range(1, 6):
-        p = str(row.get(f'SeaCap_Phone_{n}') or '').strip()
-        label = str(row.get(f'SeaCap_Phone_{n}_Status') or '').strip() or 'UNKNOWN'
+        col_name    = phone_col_map.get(n, (f'SeaCap_Phone_{n}', f'SeaCap_Phone_{n}_Status'))
+        p = str(row.get(col_name[0]) or '').strip()
         if p:
-            # Primary phone gets type "mobile", rest get "other"
             phones.append({"phone": p, "type": "mobile" if n == 1 else "other"})
 
     # Collect all emails with labels
+    # n=1 uses renamed cols ("Best Email" / "Email Status"), n=2-5 use SeaCap_ names
     emails = []
+    email_col_map = {1: ('Best Email', 'Email Status')}
     for n in range(1, 6):
-        e = str(row.get(f'SeaCap_Email_{n}') or '').strip()
-        label = str(row.get(f'SeaCap_Email_{n}_Status') or '').strip() or 'UNKNOWN'
+        col_name = email_col_map.get(n, (f'SeaCap_Email_{n}', f'SeaCap_Email_{n}_Status'))
+        e = str(row.get(col_name[0]) or '').strip()
         if e:
             emails.append({"email": e, "type": "office" if n == 1 else "other"})
 
@@ -156,10 +159,13 @@ def find_or_create_lead(row, list_value, flag_reason=""):
         contact['phones'] = phones
 
     # Build addresses
+    # n=1 uses renamed cols ("Best Address" / "Address Status"), n=2-4 use SeaCap_ names
     addresses = []
+    addr_col_map = {1: ('Best Address', 'Address Status')}
     for n in range(1, 5):
-        addr = str(row.get(f'SeaCap_Address_{n}') or '').strip()
-        addr_label = str(row.get(f'SeaCap_Address_{n}_Status') or '').strip()
+        col_name   = addr_col_map.get(n, (f'SeaCap_Address_{n}', f'SeaCap_Address_{n}_Status'))
+        addr       = str(row.get(col_name[0]) or '').strip()
+        addr_label = str(row.get(col_name[1]) or '').strip()
         if addr:
             addresses.append(f"{addr} [{addr_label}]" if addr_label else addr)
 

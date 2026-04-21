@@ -127,9 +127,9 @@ def push_to_vanillasoft(stem):
         print(f"\n  {list_value} — {len(df):,} leads", flush=True)
 
         for i, row in df.iterrows():
-            company = str(row.get("_company_clean") or row.get("Company") or row.get("Business Name") or "").strip()
-            first   = str(row.get("_first_clean") or row.get("First Name") or "").strip()
-            last    = str(row.get("_last_clean") or row.get("Last Name") or "").strip()
+            company = str(row.get("Company") or row.get("Business Name") or "").strip()
+            first   = str(row.get("First Name") or "").strip()
+            last    = str(row.get("Last Name") or "").strip()
 
             if not company and not first and not last:
                 total_skipped += 1
@@ -139,11 +139,11 @@ def push_to_vanillasoft(stem):
                 "fname":       first,
                 "lname":       last,
                 "company":     company,
-                "phone1":      str(row.get("SeaCap_Phone_1") or "").strip(),
+                "phone1":      str(row.get("Best Phone") or "").strip(),
                 "phone2":      str(row.get("SeaCap_Phone_2") or "").strip(),
-                "email1":      str(row.get("SeaCap_Email_1") or "").strip(),
+                "email1":      str(row.get("Best Email") or "").strip(),
                 "email2":      str(row.get("SeaCap_Email_2") or "").strip(),
-                "address1":    str(row.get("SeaCap_Address_1") or "").strip(),
+                "address1":    str(row.get("Best Address") or "").strip(),
                 "list_value":  list_value,
                 "flag_reason": str(row.get("SeaCap_Flag_Reason") or "").strip(),
             }
