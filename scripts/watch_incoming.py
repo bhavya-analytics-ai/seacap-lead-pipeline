@@ -86,9 +86,15 @@ def run_pipeline(filepath: Path):
             # Windows popup — person on computer can also approve
             show_popup(stem, summary)
         else:
-            log.error(f"Pipeline failed for: {filepath.name}")
+            log.error(f"❌ PIPELINE FAILED for: {filepath.name}")
+            # Show clean error — last non-empty line of stderr
             if result.stderr:
-                log.error(result.stderr.strip())
+                lines = [l.strip() for l in result.stderr.strip().splitlines() if l.strip()]
+                log.error(f"   ERROR: {lines[-1] if lines else 'unknown error'}")
+                log.error(f"   Full traceback logged to pipeline.log")
+                # Full traceback only to file, not console
+                for line in result.stderr.splitlines():
+                    log.debug(line)
             log_to_supabase(filepath.name, {}, "failed")
 
     except subprocess.TimeoutExpired:
@@ -99,13 +105,19 @@ def run_pipeline(filepath: Path):
     finally:
         # Always move file to processed/ whether it succeeded or not
         dest = PROCESSED_DIR / filepath.name
-        # If file with same name already in processed, add timestamp
         if dest.exists():
             ts = time.strftime("%Y%m%d_%H%M%S")
             dest = PROCESSED_DIR / f"{filepath.stem}_{ts}{filepath.suffix}"
 
         shutil.move(str(filepath), str(dest))
         log.info(f"Moved to processed/: {dest.name}")
+
+        # Upload original file to Supabase Storage under originals/YYYY-MM-DD/
+        try:
+            upload_original_to_supabase(dest)
+        except Exception as e:
+            log.warning(f"Original upload to Supabase failed (non-fatal): {e}")
+
         log.info("-" * 60)
 
 # ============================================================
@@ -136,7 +148,11 @@ def push_from_local(stem: str, choice: str):
 
 
 def show_popup(stem: str, summary: dict):
-    """Show Windows popup asking where to push. Non-blocking thread."""
+    """Show Windows popup asking where to push. Windows only — skipped on Mac/Linux."""
+    import sys
+    if sys.platform != "win32":
+        log.info("Popup skipped (Windows only)")
+        return
     import threading
 
     def _popup():
@@ -210,6 +226,32 @@ class IncomingHandler(FileSystemEventHandler):
         filepath = Path(event.dest_path)
         if filepath.suffix.lower() in WATCHED_EXTENSIONS:
             run_pipeline(filepath)
+
+# ============================================================
+# SUPABASE ORIGINAL UPLOAD
+# ============================================================
+def upload_original_to_supabase(filepath: Path):
+    """Upload original incoming file to Supabase Storage under originals/YYYY-MM-DD/."""
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        log.warning("Supabase not configured — skipping original upload")
+        return
+    import requests
+    date_folder = time.strftime("%Y-%m-%d")
+    fname       = filepath.name
+    url         = f"{SUPABASE_URL}/storage/v1/object/pipeline-batches/originals/{date_folder}/{fname}"
+    ext         = filepath.suffix.lower()
+    ct          = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if ext in (".xlsx", ".xls") else "text/csv"
+    with open(filepath, "rb") as f:
+        r = requests.post(url, headers={
+            "apikey":         SUPABASE_KEY,
+            "Authorization":  f"Bearer {SUPABASE_KEY}",
+            "Content-Type":   ct,
+            "x-upsert":       "true"
+        }, data=f, timeout=60)
+    if r.status_code in (200, 201):
+        log.info(f"Original uploaded to Supabase: originals/{date_folder}/{fname}")
+    else:
+        log.warning(f"Original upload failed: {r.status_code} {r.text[:100]}")
 
 # ============================================================
 # MAIN
