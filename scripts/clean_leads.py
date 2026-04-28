@@ -1,6 +1,5 @@
 import re
 import sys
-import time
 import requests
 import pandas as pd
 from pathlib import Path
@@ -40,91 +39,7 @@ STEM = Path(INPUT_FILE).stem
 # Set to None to process the full file
 TEST_MODE = None
 
-# ============================================================
-# COLUMN DETECTION
-# ============================================================
-PHONE_COLS   = ["Mobile", "MainPhone", "Phone", "Phone Number", "Cell", "CellPhone",
-                "WorkPhone", "Telephone", "Phone1", "Phone2", "Phone3", "Phone 1",
-                "Phone 2", "Phone 3", "Alt Phone", "AltPhone", "Other Phone", "Fax"]
-EMAIL_COLS   = ["Email", "Email Address", "EmailAddress", "E-mail", "Email1", "Email2",
-                "Email 1", "Email 2", "Alt Email", "AltEmail", "Work Email", "Personal Email"]
-COMPANY_COLS = ["Company", "Company Name", "Business Name", "Business", "DBA", "Merchant Name"]
-FIRST_COLS   = ["First Name", "FirstName", "First", "fname"]
-LAST_COLS    = ["Last Name", "LastName", "Last", "lname"]
-STATUS_COLS  = ["Lead Status", "Status", "LeadStatus", "Disposition"]
-SOURCE_COLS  = ["Lead Source", "Source", "LeadSource", "Campaign"]
-ADDRESS_COLS = ["Address", "Address1", "Address 1", "Street", "Street Address",
-                "Mailing Address", "Business Address", "Home Address", "Billing Address",
-                "Address Line 1", "Addr1", "Addr"]
-
-def find_col(df, options):
-    for c in options:
-        if c in df.columns:
-            return c
-    return None
-
-def find_all_cols(df, options, pattern_fn=None):
-    """Find ALL matching columns (not just first). Used for multi-phone/email/address."""
-    found = []
-    for c in df.columns:
-        if c in options:
-            found.append(c)
-    # Also detect by pattern if function provided
-    if pattern_fn:
-        for c in df.columns:
-            if c in found:
-                continue
-            sample = df[c].dropna().astype(str).head(30)
-            if len(sample) == 0:
-                continue
-            hit_rate = sample.apply(pattern_fn).sum() / len(sample)
-            if hit_rate >= 0.7:
-                found.append(c)
-    return found
-
-def detect_by_pattern(df, field, already_found, used_cols):
-    if already_found:
-        return already_found
-
-    def is_phone(val):
-        raw = str(val).split(".")[0].strip()
-        digits = re.sub(r'\D', '', raw)
-        return len(digits) in [10, 11]
-
-    def is_email(val):
-        return "@" in str(val) and "." in str(val).split("@")[-1]
-
-    def is_name(val):
-        v = str(val).strip()
-        return bool(re.match(r'^[A-Za-z\s\'\-\.]+$', v)) and 2 <= len(v) <= 40
-
-    def is_company(val):
-        v = str(val).strip()
-        return len(v) > 2 and not re.match(r'^[\d\s\(\)\-\+]+$', v)
-
-    checkers = {
-        "phone":   is_phone,
-        "email":   is_email,
-        "first":   is_name,
-        "last":    is_name,
-        "company": is_company,
-    }
-
-    checker = checkers.get(field)
-    if not checker:
-        return None
-
-    for col in df.columns:
-        if col in used_cols:
-            continue
-        sample = df[col].dropna().astype(str).head(30)
-        if len(sample) == 0:
-            continue
-        hit_rate = sample.apply(checker).sum() / len(sample)
-        if hit_rate >= 0.7:
-            print(f"   ⚠️  '{field}' not found by name — detected by pattern in column: '{col}' ({int(hit_rate*100)}% match)")
-            return col
-    return None
+# (Column detection is fully content-based — see score_column() inside main())
 
 # ============================================================
 # CLEANING HELPERS
@@ -155,9 +70,9 @@ def clean_name(val):
     if any(f in name.lower() for f in FAKE_NAMES):
         return ""
     if re.search(r'\d', name):
-        return ""  # has digits → not a real name
+        return ""
     if COMPANY_INDICATORS.search(name):
-        return ""  # looks like a company name
+        return ""
     return name
 
 def clean_phone(val):
@@ -179,32 +94,15 @@ def clean_email(val):
         return email
     return ""
 
-def is_garbage_business(val):
-    """Returns reason string if business name looks like garbage, else empty string."""
-    if not val or pd.isna(val):
-        return ""
-    v = str(val).strip()
-    digits = re.sub(r'\D', '', v)
-    if len(digits) >= 7:
-        return "Business name looks like a phone number"
-    if re.match(r'^\d+\s+\w+', v):
-        return "Business name looks like an address"
-    if re.match(r'^[A-Za-z\s\'\-\.]+$', v) and 2 <= len(v) <= 30 and not COMPANY_INDICATORS.search(v):
-        # Looks like a person's name not a company — don't flag, could be sole prop
-        pass
-    return ""
-
 def clean_date(val):
-    """Parse any date format to ISO YYYY-MM-DD, blank if unparseable."""
     if pd.isna(val) or not str(val).strip():
         return ""
     try:
-        return pd.to_datetime(val, infer_datetime_format=True, errors='coerce').strftime('%Y-%m-%d')
+        return pd.to_datetime(val, errors='coerce').strftime('%Y-%m-%d')
     except:
         return ""
 
 def split_full_name(val):
-    """Split 'John Smith' into ('John', 'Smith'). Returns (first, last)."""
     if not val or pd.isna(val):
         return "", ""
     parts = str(val).strip().split()
@@ -212,12 +110,65 @@ def split_full_name(val):
         return parts[0].title(), " ".join(parts[1:]).title()
     return str(val).strip().title(), ""
 
+def extract_state(address):
+    """Extract 2-letter US state from an address string."""
+    if not address or pd.isna(address):
+        return ""
+    addr = str(address).strip()
+    # State before zip: e.g. "Dallas, TX 75201"
+    m = re.search(r'\b([A-Z]{2})\s+\d{5}', addr)
+    if m:
+        return m.group(1)
+    # State after comma at end: e.g. "Dallas, TX"
+    m = re.search(r',\s*([A-Z]{2})\s*$', addr)
+    if m:
+        return m.group(1)
+    return ""
+
+def _phone_col_score(colname):
+    """Pre-score a phone column by its name before Twilio verification."""
+    n = colname.lower()
+    if "fax" in n:                                   return -5
+    if any(x in n for x in ["mobile", "cell"]):      return 3
+    if any(x in n for x in ["phone", "primary", "main"]): return 2
+    if any(x in n for x in ["work", "office"]):      return 1
+    return 0
+
+def _email_col_score(colname, email_val=""):
+    """Pre-score an email column by name + domain quality."""
+    score = 0
+    n = colname.lower()
+    if any(x in n for x in ["primary", "email", "mail"]): score += 2
+    if any(x in n for x in ["work", "personal"]):         score += 1
+    if email_val and "@" in email_val:
+        local  = email_val.split("@")[0].lower()
+        domain = email_val.split("@")[-1].lower()
+        if any(local.startswith(r) for r in ["info","sales","admin","contact","support","hello","office"]):
+            score -= 2
+        if domain and not any(d in domain for d in ["gmail","yahoo","hotmail","outlook","aol","icloud"]):
+            score += 2
+    return score
+
+def _split_multi(val):
+    """Split a cell that may contain multiple phone/email values separated by ; / |"""
+    parts = re.split(r'[;/|]|\s{2,}', str(val).strip())
+    return [p.strip() for p in parts if p.strip()]
+
+def line_type_to_label(line_type):
+    """Convert Twilio line_type to human-readable Cell / Landline / VoIP."""
+    lt = str(line_type or "").lower()
+    if any(w in lt for w in ["mobile", "cell"]):
+        return "Cell"
+    if any(w in lt for w in ["landline", "fixed"]):
+        return "Landline"
+    if "voip" in lt:
+        return "VoIP"
+    return lt.title() if lt else ""
+
 # ============================================================
 # VERIFICATION
 # ============================================================
-
 def verify_email_millionverifier(email):
-    """Returns: VERIFIED / UNVERIFIED / INVALID / DISPOSABLE / SPAMTRAP / FORMAT-BAD / UNKNOWN"""
     if not email:
         return "FORMAT-BAD"
     if not MILLIONVERIFIER_KEY:
@@ -244,7 +195,6 @@ def verify_email_millionverifier(email):
         return "UNKNOWN"
 
 def verify_business_google(company):
-    """Returns dict: exists, found_phone, found_address, status"""
     if not company or not GOOGLE_API_KEY:
         return {"exists": None, "found_phone": "", "found_address": "", "status": "UNKNOWN"}
     try:
@@ -275,7 +225,6 @@ def verify_business_google(company):
         return {"exists": None, "found_phone": "", "found_address": "", "status": "UNKNOWN"}
 
 def verify_sos_cobalt(company):
-    """Returns: active / inactive / unknown"""
     if not company or not COBALT_KEY:
         return "UNKNOWN"
     try:
@@ -301,10 +250,6 @@ def verify_sos_cobalt(company):
         return "UNKNOWN"
 
 def verify_phone_twilio(phone):
-    """
-    Returns dict: label, caller_name, line_type
-    label: VERIFIED / VERIFIED-NO-NAME / SECONDARY / MISMATCH / VOIP / FORMAT-BAD / UNKNOWN
-    """
     if not phone:
         return {"label": "FORMAT-BAD", "caller_name": "", "line_type": ""}
     if not TWILIO_SID or not TWILIO_TOKEN:
@@ -325,9 +270,9 @@ def verify_phone_twilio(phone):
         if r.status_code != 200:
             return {"label": "UNKNOWN", "caller_name": "", "line_type": ""}
         data = r.json()
-        line_info = data.get("line_type_intelligence") or {}
+        line_info   = data.get("line_type_intelligence") or {}
         caller_info = data.get("caller_name") or {}
-        line_type = line_info.get("type", "").lower()
+        line_type   = line_info.get("type", "").lower()
         caller_name = (caller_info.get("caller_name") or "").strip()
         valid = line_info.get("error_code") is None
         if not valid:
@@ -341,23 +286,17 @@ def verify_phone_twilio(phone):
         return {"label": "UNKNOWN", "caller_name": "", "line_type": ""}
 
 def check_name_phone_match(csv_name, twilio_name):
-    """Compare CSV name to Twilio caller name. Returns MATCH / MISMATCH / NO-DATA / UNKNOWN"""
     if not twilio_name:
         return "NO-DATA"
     if not csv_name:
         return "UNKNOWN"
-    # Simple: check if any word from csv name appears in twilio name
-    csv_words = set(csv_name.lower().split())
+    csv_words    = set(csv_name.lower().split())
     twilio_words = set(twilio_name.lower().split())
     if csv_words & twilio_words:
         return "MATCH"
     return "MISMATCH"
 
 def rank_phones(phone_list, csv_name):
-    """
-    Score each phone and return sorted list of dicts with label.
-    Higher score = better.
-    """
     results = []
     for phone in phone_list:
         cleaned = clean_phone(phone)
@@ -368,23 +307,16 @@ def rank_phones(phone_list, csv_name):
                 "name_match": "UNKNOWN", "score": 0
             })
             continue
-        twilio = verify_phone_twilio(cleaned)
-        label = twilio["label"]
+        twilio     = verify_phone_twilio(cleaned)
+        label      = twilio["label"]
         caller_name = twilio["caller_name"]
-        line_type = twilio["line_type"]
+        line_type  = twilio["line_type"]
         name_match = check_name_phone_match(csv_name, caller_name)
         if name_match == "MISMATCH":
             label = "MISMATCH"
 
-        score = {
-            "VERIFIED": 5,
-            "VERIFIED-NO-NAME": 4,
-            "SECONDARY": 3,
-            "VOIP": 2,
-            "UNKNOWN": 1,
-            "MISMATCH": 1,
-            "FORMAT-BAD": 0,
-        }.get(label, 1)
+        score = {"VERIFIED": 5, "VERIFIED-NO-NAME": 4, "SECONDARY": 3,
+                 "VOIP": 2, "UNKNOWN": 1, "MISMATCH": 1, "FORMAT-BAD": 0}.get(label, 1)
 
         results.append({
             "original": phone, "cleaned": cleaned,
@@ -396,7 +328,6 @@ def rank_phones(phone_list, csv_name):
     return results
 
 def rank_emails(email_list):
-    """Score each email, return sorted list."""
     results = []
     for email in email_list:
         cleaned = clean_email(email)
@@ -404,78 +335,134 @@ def rank_emails(email_list):
             results.append({"original": email, "cleaned": str(email), "label": "FORMAT-BAD", "score": 0})
             continue
         label = verify_email_millionverifier(cleaned)
-        score = {
-            "VERIFIED": 5,
-            "UNVERIFIED": 3,
-            "UNKNOWN": 2,
-            "INVALID": 1,
-            "DISPOSABLE": 1,
-            "SPAMTRAP": 0,
-            "FORMAT-BAD": 0,
-        }.get(label, 1)
+        score = {"VERIFIED": 5, "UNVERIFIED": 3, "UNKNOWN": 2,
+                 "INVALID": 1, "DISPOSABLE": 1, "SPAMTRAP": 0, "FORMAT-BAD": 0}.get(label, 1)
         results.append({"original": email, "cleaned": cleaned, "label": label, "score": score})
     results.sort(key=lambda x: x["score"], reverse=True)
     return results
 
-def verify_addresses(address_list, google_address):
-    """Label each address as GOOGLE-VERIFIED or UNVERIFIED."""
-    results = []
-    google_norm = google_address.lower().strip() if google_address else ""
-    for addr in address_list:
-        if not addr or pd.isna(addr) or not str(addr).strip():
-            continue
-        addr_str = str(addr).strip()
-        addr_norm = addr_str.lower()
-        # Simple match: check if key parts overlap
-        if google_norm and any(word in google_norm for word in addr_norm.split()[:3] if len(word) > 3):
-            results.append({"address": addr_str, "label": "GOOGLE-VERIFIED"})
-        elif google_norm:
-            results.append({"address": addr_str, "label": "UNVERIFIED"})
-        else:
-            results.append({"address": addr_str, "label": "UNKNOWN"})
-    return results
-
 # ============================================================
 # SORT INTO 4 LISTS
+# Uses internal column names set during seacap build
 # ============================================================
-def get_list(row):
-    # DNC check
-    dnc = str(row.get("_dnc_flag", "")).upper()
-    if dnc in ["Y", "YES", "1", "TRUE", "DO NOT CALL"]:
-        return "DNC"
+def _name_match(full_name_found, first, last, company):
+    """Partial OR match — if any part of first, last, or company appears in Full Name Found."""
+    if not full_name_found:
+        return False
+    found = full_name_found.lower()
+    for part in [first, last]:
+        if part and len(part) >= 2 and part.lower() in found:
+            return True
+    if company:
+        # Check first word of company too
+        company_words = [w for w in company.lower().split() if len(w) >= 3
+                         and w not in ("llc", "inc", "ltd", "corp", "the", "and")]
+        if any(w in found for w in company_words):
+            return True
+    return False
 
-    # Funded check
-    status = str(row.get("_status", "")).lower()
-    if any(x in status for x in ["funded", "closed won", "won"]):
+def _email_name_match(email, first, last, company):
+    """Check if first, last, or company word appears in the email address (before @)."""
+    if not email or "@" not in email:
+        return False
+    local = email.split("@")[0].lower()
+    for part in [first, last]:
+        if part and len(part) >= 2 and part.lower() in local:
+            return True
+    if company:
+        company_words = [w for w in company.lower().split() if len(w) >= 3
+                         and w not in ("llc", "inc", "ltd", "corp", "the", "and")]
+        if any(w in local for w in company_words):
+            return True
+    return False
+
+def get_list(row):
+    if str(row.get("_dnc_flag", "")).upper() in ["Y", "YES", "1", "TRUE", "DO NOT CALL"]:
+        return "DNC"
+    if any(x in str(row.get("_status", "")).lower() for x in ["funded", "closed won", "won"]):
         return "Funded"
 
-    phone1_label = str(row.get("SeaCap_Phone_1_Status", "")).upper()
-    email1_label = str(row.get("SeaCap_Email_1_Status", "")).upper()
-    sos_v        = str(row.get("SeaCap_SOS_Check", "")).lower()
-    phone1       = str(row.get("SeaCap_Phone_1", "")).strip()
-    email1       = str(row.get("SeaCap_Email_1", "")).strip()
+    phone1_label    = str(row.get("Phone Status", "")).upper()
+    email1_label    = str(row.get("Email Status", "")).upper()
+    phone1          = str(row.get("Best Phone", "")).strip()
+    email1          = str(row.get("Best Email", "")).strip()
+    full_name_found = str(row.get("Full Name Found", "")).strip()
+    first           = str(row.get("First Name", "")).strip()
+    last            = str(row.get("Last Name", "")).strip()
+    company         = str(row.get("Company", "")).strip()
 
-    # SOS confirmed inactive → Needs Fixing
-    if sos_v == "inactive":
-        return "Needs Fixing"
+    email_good        = email1_label == "VERIFIED" and bool(email1)
+    email_salvageable = email1_label in ("INVALID", "UNVERIFIED") and \
+                        _email_name_match(email1, first, last, company)
+    name_match        = _name_match(full_name_found, first, last, company)
 
-    # Name/phone mismatch → Needs Fixing
+    # MISMATCH phone — always Qualified if Cell (can text regardless of email)
     if phone1_label == "MISMATCH":
+        line_type = str(row.get("Cell/Landline", "")).upper()
+        if line_type == "CELL":
+            return "Qualified"
+        if email_good or email_salvageable:
+            return "Qualified"
         return "Needs Fixing"
 
-    # Spamtrap email AND no phone → Needs Fixing
-    if email1_label == "SPAMTRAP" and not phone1:
-        return "Needs Fixing"
-
-    # Has a usable phone → Qualified
-    if phone1 and phone1_label not in ["FORMAT-BAD"]:
+    # VERIFIED-NO-NAME — Qualified if email good OR name/company in email address
+    # Needs Fixing only if email invalid + no name match anywhere
+    if phone1_label == "VERIFIED-NO-NAME":
+        if email_good or email_salvageable:
+            return "Qualified"
+        if email1_label == "INVALID" and not full_name_found and not name_match:
+            return "Needs Fixing"
         return "Qualified"
 
-    # No phone but has email → Qualified
-    if email1 and email1_label not in ["FORMAT-BAD", "INVALID", "DISPOSABLE", "SPAMTRAP"]:
+    # VERIFIED phone — always Qualified
+    if phone1_label == "VERIFIED":
+        return "Qualified"
+
+    # Fallback
+    if phone1 and phone1_label not in ("FORMAT-BAD",):
+        return "Qualified"
+    if email_good or email_salvageable:
         return "Qualified"
 
     return "Needs Fixing"
+
+def get_priority(row):
+    """TEXT = verified or mismatch cell. EMAIL = no-name or landline."""
+    phone_label = str(row.get("Phone Status", "")).upper()
+    line_type   = str(row.get("Cell/Landline", "")).upper()
+    if phone_label in ("VERIFIED", "MISMATCH") and line_type == "CELL":
+        return "TEXT"
+    return "EMAIL"
+
+def quality_score(row):
+    """Score a row by data quality — higher = better lead."""
+    phone_score = {"VERIFIED": 5, "VERIFIED-NO-NAME": 4, "SECONDARY": 3,
+                   "VOIP": 2, "UNKNOWN": 1, "MISMATCH": 1, "FORMAT-BAD": 0, "": 0
+                   }.get(str(row.get("Phone Status", "")), 1)
+    email_score = {"VERIFIED": 5, "UNVERIFIED": 3, "UNKNOWN": 2,
+                   "INVALID": 1, "DISPOSABLE": 1, "SPAMTRAP": 0, "FORMAT-BAD": 0, "": 0
+                   }.get(str(row.get("Email Status", "")), 1)
+    return phone_score * 2 + email_score  # phone weighted higher
+
+# ============================================================
+# FIXED OUTPUT COLUMN ORDER (Adam's uniform template)
+# ============================================================
+FIXED_COLS = [
+    "First Name", "Last Name", "Company",
+    "Best Phone", "Phone Status", "Cell/Landline",
+    "Best Email", "Email Status", "State",
+    "Annual Revenue", "Flag Reason", "Full Name Found",
+    "Fix_Reason", "List", "Duplicate_Flag",
+    "Status", "Adam List", "Priority", "Notes",
+]
+
+# Close CRM status + Adam List number per list type
+_LIST_META = {
+    "Qualified":    ("🆕 New / Uncontacted",   "List 1 - Qualified"),
+    "Needs Fixing": ("⚠️ Invalid Contact Info", "List 2 - Needs Fixing"),
+    "DNC":          ("🔴 Not Interested - DNC", "List 3 - DNC"),
+    "Funded":       ("🟢 Funded - SEACAP",      "List 4 - Funded"),
+}
 
 # ============================================================
 # MAIN
@@ -484,27 +471,22 @@ def main():
     print(f"\n📂 Loading: {INPUT_FILE}")
 
     def looks_like_data_row(row):
-        """True if a row looks like actual data, not column headers."""
         vals = [str(v).strip() for v in row if str(v).strip() not in ("", "nan")]
         if not vals:
             return False
-        # Looks like data if: contains email, phone digits, or pure numbers
         has_email  = any("@" in v for v in vals)
         has_phone  = any(re.sub(r'\D','',v).__len__() >= 9 for v in vals)
         has_number = any(re.match(r'^\d[\d,\.]+$', v) for v in vals)
         return has_email or has_phone or has_number
 
     def load_file(fp):
-        """Load CSV or Excel — handles bad encodings, missing headers, junk top rows."""
         fp = str(fp)
         if fp.endswith((".xlsx", ".xls")):
             df = pd.read_excel(fp, header=0)
             cols = [str(c).strip() for c in df.columns]
-            # If header row looks like actual data (has email/phone), file has no headers
             if looks_like_data_row(cols):
                 df = pd.read_excel(fp, header=None)
                 df.columns = [f"Col_{i}" for i in range(len(df.columns))]
-            # If all columns are integers, scan for real header row
             elif all(c.lstrip('-').isdigit() for c in cols):
                 df = pd.read_excel(fp, header=None)
                 for idx in range(min(10, len(df))):
@@ -521,7 +503,6 @@ def main():
             for enc in ["utf-8", "latin1", "cp1252"]:
                 try:
                     df = pd.read_csv(fp, low_memory=False, encoding=enc)
-                    # If all columns are integers, try skipping junk top rows
                     if all(str(c).strip().lstrip('-').isdigit() for c in df.columns):
                         for skip in range(1, 10):
                             df2 = pd.read_csv(fp, low_memory=False, encoding=enc, skiprows=skip)
@@ -546,7 +527,17 @@ def main():
         sys.exit(1)
 
     df.columns = [str(c).strip() for c in df.columns]
-    # Drop fully empty columns and rows
+    # Dedupe column names — prevents crash when CSV has two columns with same header
+    _seen = {}
+    _new_cols = []
+    for c in df.columns:
+        if c in _seen:
+            _seen[c] += 1
+            _new_cols.append(f"{c}__{_seen[c]}")
+        else:
+            _seen[c] = 0
+            _new_cols.append(c)
+    df.columns = _new_cols
     df = df.dropna(how="all", axis=1).dropna(how="all", axis=0).reset_index(drop=True)
 
     if TEST_MODE:
@@ -555,86 +546,257 @@ def main():
     else:
         print(f"✅ Loaded {len(df):,} records (full file)")
 
-    # ── DETECT COLUMNS ──────────────────────────────────────────
+    # ── SMART CONTENT-BASED COLUMN DETECTION ────────────────────
+    # Classifies every column by sampling content, then uses column
+    # name only as a tiebreaker. Works on any format.
+    US_STATES = {"AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA",
+                 "KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ",
+                 "NM","NY","NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT",
+                 "VA","WA","WV","WI","WY","DC"}
+    BUSINESS_RX = re.compile(
+        r'\b(llc|inc|corp|ltd|co\.|company|enterprises|group|services|solutions|consulting|'
+        r'trucking|construction|plumbing|electric|mechanical|dental|medical|clinic|salon|'
+        r'repair|painting|roofing|cleaning|logistics|staffing|restaurant|hotel|motel|'
+        r'bakery|florist|landscaping|insurance|realty|agency|studio|academy|institute)\b', re.I)
+    STREET_RX = re.compile(r'^\d+\s+\w+|\b(street|st\b|ave|avenue|blvd|road|rd\b|drive|dr\b|lane|ln\b|court|ct\b|way)\b', re.I)
+    STATUS_WORDS = {"verified","invalid","unknown","unverified","disposable","spamtrap",
+                    "mismatch","valid","bad","good","ok","deliverable","undeliverable","catchall"}
+    FLAG_VALUES  = {"y","n","yes","no","true","false","0","1","t","f"}
 
-    def is_phone_val(val):
-        digits = re.sub(r'\D', '', str(val).split(".")[0].strip())
-        return len(digits) in [10, 11]
+    def score_column(colname):
+        """Return dict of {field: score} for every field this column could match."""
+        sample = df[colname].dropna().astype(str).str.strip()
+        sample = sample[sample != ""]
+        if len(sample) == 0:
+            return {}
+        s = sample.head(50)
+        name = colname.lower().strip()
+        scores = {}
 
-    def is_email_val(val):
-        return "@" in str(val) and "." in str(val).split("@")[-1]
+        # Phone: 10-13 digits after stripping non-numeric
+        ph = s.apply(lambda v: 10 <= len(re.sub(r'\D', '', v.split('.')[0])) <= 13).sum() / len(s)
+        if ph >= 0.7: scores["phone"] = ph
 
-    def is_address_val(val):
-        v = str(val).strip()
-        return bool(re.match(r'^\d+\s+\w+', v)) or any(
-            w in v.lower() for w in ["street", "st ", "ave", "blvd", "rd ", "drive", "lane", "court"]
-        )
+        # Email: has @ and .
+        em = s.apply(lambda v: "@" in v and "." in v.split("@")[-1] and len(v) >= 5).sum() / len(s)
+        if em >= 0.7: scores["email"] = em
 
-    # Single-column fields
-    col = {
-        "company": find_col(df, COMPANY_COLS),
-        "first":   find_col(df, FIRST_COLS),
-        "last":    find_col(df, LAST_COLS),
-        "status":  find_col(df, STATUS_COLS),
-        "source":  find_col(df, SOURCE_COLS),
-    }
-    used = set(v for v in col.values() if v)
-    for field in ["first", "last", "company"]:
-        col[field] = detect_by_pattern(df, field, col[field], used)
-        if col[field]:
-            used.add(col[field])
+        # State: 2 uppercase letters matching US states
+        st = s.apply(lambda v: v.upper() in US_STATES).sum() / len(s)
+        if st >= 0.7: scores["state"] = st
 
-    # Multi-column fields
-    phone_cols   = find_all_cols(df, PHONE_COLS, is_phone_val)
-    email_cols   = find_all_cols(df, EMAIL_COLS, is_email_val)
-    address_cols = find_all_cols(df, ADDRESS_COLS, is_address_val)
+        # Zip: exactly 5 digits (or 5-4 format)
+        zp = s.apply(lambda v: bool(re.match(r'^\d{5}(-\d{4})?$', v.split('.')[0]))).sum() / len(s)
+        if zp >= 0.7: scores["zip"] = zp
 
-    # Auto-detect Annual Revenue column — large numeric values not already used
-    if not find_col(df, ["Annual Revenue", "AnnualRevenue", "Revenue", "Annual Rev", "Ann Rev"]):
-        already_used = set(phone_cols + email_cols + address_cols + list(col.values()))
-        for c in df.columns:
-            if c in already_used:
-                continue
-            sample = df[c].dropna()
-            if len(sample) == 0:
-                continue
-            try:
-                nums = pd.to_numeric(sample.astype(str).str.replace(',',''), errors='coerce').dropna()
-                if len(nums) >= len(sample) * 0.8 and nums.median() >= 10000:
-                    df = df.rename(columns={c: "Annual Revenue"})
-                    break
-            except Exception:
-                continue
+        # Status words (verified/invalid/etc)
+        sw = s.apply(lambda v: v.lower() in STATUS_WORDS).sum() / len(s)
+        if sw >= 0.5: scores["status_word"] = sw
 
-    # Auto-detect Company column — only if not already found by column name
-    already_used = set(phone_cols + email_cols + address_cols)
-    already_used.update(v for v in [col.get("first"), col.get("last"), col.get("status"), col.get("source")] if v)
-    # Only auto-detect if no company col found by name
-    found_by_name = find_col(df, COMPANY_COLS)
-    best_company_col = found_by_name or col.get("company")
-    best_score = 1.0 if found_by_name else 0  # if found by name, don't override
-    for c in df.columns:
-        if c in already_used or c == "Annual Revenue":
-            continue
-        sample = df[c].dropna().astype(str)
-        if len(sample) < 3:
-            continue
-        # Score: how many values look like business names
-        biz_hits  = sample.str.contains(r'\b(llc|inc|corp|ltd|co\.|company|enterprises|group|services|solutions|consulting|trucking|construction|plumbing|electric|mechanical|dental|medical|clinic|salon|repair|painting|roofing|cleaning|logistics|staffing|restaurant|hotel|motel|bakery|florist|landscaping|insurance|realty|agency|studio|academy|institute|foundation|association)\b', case=False, regex=True).sum()
-        # Penalise if it looks like a name column (short words, no business keywords)
-        score = biz_hits / max(len(sample), 1)
-        if score > best_score and score >= 0.2:
-            best_score = score
-            best_company_col = c
-    if best_company_col:
-        col["company"] = best_company_col
+        # Flag (Y/N/1/0)
+        fl = s.apply(lambda v: v.lower() in FLAG_VALUES).sum() / len(s)
+        if fl >= 0.8: scores["flag"] = fl
 
+        # Revenue/amount: numeric with median >= 1000
+        try:
+            nums = pd.to_numeric(s.str.replace(r'[$,\s]', '', regex=True), errors='coerce').dropna()
+            if len(nums) >= len(s) * 0.8 and nums.median() >= 1000:
+                scores["money"] = len(nums) / len(s)
+        except Exception:
+            pass
+
+        # Address: starts with digits + street words
+        ad = s.apply(lambda v: bool(STREET_RX.search(v))).sum() / len(s)
+        if ad >= 0.5: scores["address"] = ad
+
+        # Company: business keywords
+        co = s.apply(lambda v: bool(BUSINESS_RX.search(v))).sum() / len(s)
+        if co >= 0.2: scores["company"] = co
+
+        # Name: alpha-only, 2-40 chars, no digits, no @
+        nm = s.apply(lambda v: bool(re.match(r"^[A-Za-z][A-Za-z\s\'\-\.]{1,39}$", v))
+                     and "@" not in v).sum() / len(s)
+        if nm >= 0.7: scores["name"] = nm
+        return scores
+
+    # Score every column
+    col_scores = {c: score_column(c) for c in df.columns}
+
+    # Pick best column per field using content score + name hint
+    def best_for(field, name_hints, score_key=None, excluded=None):
+        score_key = score_key or field
+        excluded = excluded or set()
+        best, best_score = None, 0
+        for c, sc in col_scores.items():
+            if c in excluded: continue
+            if score_key not in sc: continue
+            bonus = 0.2 if any(h in c.lower() for h in name_hints) else 0
+            total = sc[score_key] + bonus
+            if total > best_score:
+                best, best_score = c, total
+        return best
+
+    def all_for(field, name_hints, score_key=None, excluded=None):
+        score_key = score_key or field
+        excluded = excluded or set()
+        out = []
+        for c, sc in col_scores.items():
+            if c in excluded: continue
+            if score_key in sc:
+                bonus = 0.2 if any(h in c.lower() for h in name_hints) else 0
+                out.append((c, sc[score_key] + bonus))
+        out.sort(key=lambda x: -x[1])
+        return [c for c, _ in out]
+
+    used = set()
+    col = {}
+
+    # Phones (all matching, first one is primary)
+    phone_cols = all_for("phone", ["phone","mobile","cell","tel","contact"])
+    used.update(phone_cols)
+
+    # Emails
+    email_cols = all_for("email", ["email","e-mail","mail"])
+    used.update(email_cols)
+
+    # Addresses
+    address_cols = all_for("address", ["address","street","addr"])
+    used.update(address_cols)
+
+    # Money column → rename to Annual Revenue (largest-median money column)
+    money_cols = [(c, col_scores[c]["money"]) for c in col_scores if "money" in col_scores[c] and c not in used]
+    if money_cols:
+        # Pick column with highest median value
+        best_money = max(money_cols, key=lambda x: df[x[0]].astype(str).str.replace(r'[$,\s]','',regex=True)
+                         .pipe(pd.to_numeric, errors='coerce').median())
+        revenue_col = best_money[0]
+        if revenue_col != "Annual Revenue":
+            df = df.rename(columns={revenue_col: "Annual Revenue"})
+        used.add("Annual Revenue")
+        col["revenue"] = "Annual Revenue"
+
+    # Company (business keyword score + name hint)
+    col["company"] = best_for("company", ["company","business","dba","merchant","organization"], excluded=used)
+    if col["company"]: used.add(col["company"])
+
+    # Names — use column name hints to distinguish first vs last
+    name_candidates = [c for c in col_scores if "name" in col_scores[c] and c not in used]
+    def find_name(hints, excluded):
+        best, best_score = None, 0
+        for c in name_candidates:
+            if c in excluded: continue
+            n = c.lower()
+            if any(h in n for h in hints):
+                score = col_scores[c]["name"] + 0.5
+                if score > best_score:
+                    best, best_score = c, score
+        return best
+
+    col["first"] = find_name(["first","fname","given"], used)
+    if col["first"]: used.add(col["first"])
+    col["last"] = find_name(["last","lname","lastname","surname","family"], used)
+    if col["last"]: used.add(col["last"])
+
+    # DNC flag column (flag score + name hint)
+    dnc_col = None
+    for c in col_scores:
+        if c in used: continue
+        if "flag" in col_scores[c] and any(h in c.lower() for h in ["dnc","donot","do_not","optout","opt_out"]):
+            dnc_col = c; break
+    col["dnc"] = dnc_col
+    if dnc_col: used.add(dnc_col)
+
+    # Wireless/line-type flag
+    wireless_col = None
+    for c in col_scores:
+        if c in used: continue
+        if "flag" in col_scores[c] and any(h in c.lower() for h in ["wireless","cell","mobile","linetype","line_type"]):
+            wireless_col = c; break
+    col["wireless"] = wireless_col
+    if wireless_col: used.add(wireless_col)
+
+    # Email status column (verified/invalid vocab + name hint)
+    email_status_col = None
+    for c in col_scores:
+        if c in used: continue
+        if "status_word" in col_scores[c] and any(h in c.lower() for h in ["email","mail"]):
+            email_status_col = c; break
+    col["email_status"] = email_status_col
+    if email_status_col: used.add(email_status_col)
+
+    # Phone status column
+    phone_status_col = None
+    for c in col_scores:
+        if c in used: continue
+        if "status_word" in col_scores[c] and any(h in c.lower() for h in ["phone","number","call"]):
+            phone_status_col = c; break
+    col["phone_status"] = phone_status_col
+    if phone_status_col: used.add(phone_status_col)
+
+    # State
+    col["state"] = best_for("state", ["state","province","region"], excluded=used)
+    if col["state"]: used.add(col["state"])
+
+    # Lead status / source (not critical, skip if missing)
+    _status_hints = {"lead status", "status", "leadstatus", "disposition"}
+    _source_hints = {"lead source", "source", "leadsource", "campaign"}
+    col["status"] = next((c for c in df.columns if c.lower() in _status_hints), None)
+    col["source"] = next((c for c in df.columns if c.lower() in _source_hints), None)
+
+    # ── DETECTION REPORT ─────────────────────────────────────────
     print(f"\n🔎 Columns detected:")
-    for k, v in col.items():
-        print(f"   {k:<10} → {v or 'NOT FOUND'}")
-    print(f"   phones     → {phone_cols or 'NOT FOUND'}")
-    print(f"   emails     → {email_cols or 'NOT FOUND'}")
-    print(f"   addresses  → {address_cols or 'NOT FOUND'}")
+    report_fields = [
+        ("First Name", col.get("first")),
+        ("Last Name",  col.get("last")),
+        ("Company",    col.get("company")),
+        ("Phone(s)",   ", ".join(phone_cols) if phone_cols else None),
+        ("Email(s)",   ", ".join(email_cols) if email_cols else None),
+        ("Address(s)", ", ".join(address_cols) if address_cols else None),
+        ("State",      col.get("state")),
+        ("Revenue",    col.get("revenue")),
+        ("DNC Flag",   col.get("dnc")),
+        ("Wireless",   col.get("wireless")),
+        ("Email Status", col.get("email_status")),
+        ("Phone Status", col.get("phone_status")),
+        ("Lead Status", col.get("status")),
+    ]
+    for label, value in report_fields:
+        icon = "✅" if value else "  "
+        print(f"   {icon} {label:<14} → {value or '—'}")
+
+    # ── VALIDATION — fail loud with helpful message ─────────────
+    missing = []
+    if not phone_cols and not email_cols:
+        missing.append("phone OR email")
+    if not col.get("first") and not col.get("company"):
+        missing.append("name OR company")
+
+    if missing:
+        print("\n" + "=" * 60)
+        print("❌  FILE REJECTED — required columns missing")
+        print("=" * 60)
+        print(f"\nMissing: {', '.join(missing)}\n")
+        print("What to do:")
+        if "phone OR email" in missing:
+            print("  • Add a column with phone numbers (any name: phone, mobile, cell, phone1, etc).")
+            print("    Accepted formats: (555) 123-4567, 5551234567, +1 555 123 4567")
+            print("  • Or add a column with emails.")
+        if "name OR company" in missing:
+            print("  • Add a First Name column or a Company/Business Name column.")
+        print("\nColumns found in your file:")
+        for c in df.columns:
+            print(f"    {c}")
+        print("=" * 60)
+        sys.exit(1)
+
+    # ── DETERMINE SOURCE NAME ────────────────────────────────────
+    # Used as the "List" column value (replaces Qualified/Needs Fixing)
+    source_name = STEM  # fallback to filename
+    if col.get("source"):
+        vals = df[col["source"]].dropna().astype(str).str.strip()
+        vals = vals[vals.ne("") & vals.ne("nan")]
+        if len(vals) > 0:
+            source_name = vals.mode().iloc[0]
 
     # ── CLEAN SINGLE FIELDS ──────────────────────────────────────
     print("\n🔧 Cleaning...")
@@ -642,12 +804,10 @@ def main():
     df["_status"]        = df[col["status"]].fillna("") if col["status"] else ""
     df["_dnc_flag"]      = ""
 
-    # Handle first/last — if only combined "Name" column exists, split it
     if col["first"] and col["last"]:
         df["_first_clean"] = df[col["first"]].apply(clean_name)
         df["_last_clean"]  = df[col["last"]].apply(clean_name)
     elif col["first"]:
-        # Might be a full name column — try to split
         splits = df[col["first"]].apply(lambda x: split_full_name(x))
         df["_first_clean"] = splits.apply(lambda x: x[0])
         df["_last_clean"]  = splits.apply(lambda x: x[1])
@@ -657,19 +817,14 @@ def main():
 
     df["_fullname"] = (df["_first_clean"] + " " + df["_last_clean"]).str.strip().str.lower()
 
-    # Clean date columns
-    date_cols = [c for c in df.columns if "date" in c.lower()]
-    for dc in date_cols:
+    for dc in [c for c in df.columns if "date" in c.lower()]:
         df[dc] = df[dc].apply(clean_date)
 
-    # Clean money columns
-    MONEY_COLS = ["Monthly Revenue", "Annual Revenue", "Annual rev", "Requested Amount",
-                  "Approved Amount", "requested_funding_amount", "Revenue", "Funding Amount"]
-    for mc in MONEY_COLS:
+    for mc in ["Monthly Revenue", "Annual Revenue", "Annual rev", "Requested Amount",
+               "Approved Amount", "requested_funding_amount", "Revenue", "Funding Amount"]:
         if mc in df.columns:
             df[mc] = df[mc].apply(clean_money)
 
-    # DNC flags
     for dnc_col in ["Closed by DNC", "SMS Opted Out", "DNC", "Do Not Call"]:
         if dnc_col in df.columns:
             df.loc[df[dnc_col].astype(str).str.upper().isin(["Y","YES","1","TRUE"]), "_dnc_flag"] = "YES"
@@ -678,314 +833,319 @@ def main():
     print("🔍 Checking for potential duplicates...")
     df["Duplicate_Flag"] = ""
 
-    # Use first phone col for dup check
     if phone_cols:
         df["_phone_primary"] = df[phone_cols[0]].apply(clean_phone)
-        phone_dup = df["_phone_primary"].ne("") & df.duplicated(subset=["_phone_primary"], keep=False)
-        same_name = phone_dup & df.duplicated(subset=["_phone_primary", "_fullname"], keep=False) & df["_fullname"].ne("")
-        diff_name = phone_dup & ~same_name
-        df.loc[same_name, "Duplicate_Flag"] = "Possible duplicate — same person"
-        df.loc[diff_name, "Duplicate_Flag"] = "Same number, different name — check manually"
+        phone_dup  = df["_phone_primary"].ne("") & df.duplicated(subset=["_phone_primary"], keep=False)
+        same_name  = phone_dup & df.duplicated(subset=["_phone_primary", "_fullname"], keep=False) & df["_fullname"].ne("")
+        diff_name  = phone_dup & ~same_name
+        df.loc[same_name, "Duplicate_Flag"] = f"Yes — same person ({source_name})"
+        df.loc[diff_name, "Duplicate_Flag"] = f"Yes — different name ({source_name})"
     else:
         df["_phone_primary"] = ""
 
     if email_cols:
         df["_email_primary"] = df[email_cols[0]].apply(clean_email)
         email_dup = df["_email_primary"].ne("") & df.duplicated(subset=["_email_primary"], keep=False)
-        df.loc[email_dup & (df["Duplicate_Flag"] == ""), "Duplicate_Flag"] = "Same email — check manually"
+        df.loc[email_dup & (df["Duplicate_Flag"] == ""), "Duplicate_Flag"] = f"Yes — same email ({source_name})"
     else:
         df["_email_primary"] = ""
 
     if col["first"] and col["last"]:
         name_dup = df["_fullname"].ne("") & df.duplicated(subset=["_fullname"], keep=False)
-        df.loc[name_dup & (df["Duplicate_Flag"] == ""), "Duplicate_Flag"] = "Same name — check manually"
+        df.loc[name_dup & (df["Duplicate_Flag"] == ""), "Duplicate_Flag"] = f"Yes — same name ({source_name})"
 
-    flagged = df["Duplicate_Flag"].ne("")
-    print(f"   Total flagged: {flagged.sum()}")
+    print(f"   Total flagged: {df['Duplicate_Flag'].ne('').sum()}")
 
-    # ── VERIFY ALL PHONES / EMAILS / ADDRESSES + BUILD SeaCap COLS ──
+    # ── VERIFY ALL PHONES / EMAILS + BUILD OUTPUT COLS ──────────
     print("\n🔬 Verifying leads (this may take a while)...")
+    _total_rows = len(df)
+    _done_count = [0]
+    import threading
+    _lock = threading.Lock()
 
-    seacap_rows = []
+    def _progress():
+        filled = int(30 * _done_count[0] / _total_rows) if _total_rows else 30
+        bar = "█" * filled + "░" * (30 - filled)
+        sys.stderr.write(f'\r  [Verifying] [{bar}] {_done_count[0]}/{_total_rows}')
+        sys.stderr.flush()
 
-    for i, row in df.iterrows():
+    def _process_row(args):
+        i, row = args
         csv_name = str(row.get("_fullname", "")).strip()
         company  = str(row.get("_company_clean", "")).strip()
 
-        # Collect raw phone values from all phone columns
-        raw_phones = []
+        # Collect + pre-score phones by column name before Twilio
+        phone_candidates = []
         for pc in phone_cols:
-            v = row.get(pc, "")
-            if v and not pd.isna(v) and str(v).strip():
-                raw_phones.append(str(v).strip())
+            v = row.get(pc)
+            if not v or pd.isna(v): continue
+            for part in _split_multi(v):
+                if part and part != "nan":
+                    phone_candidates.append((part, pc, _phone_col_score(pc)))
+        phone_candidates.sort(key=lambda x: -x[2])
+        # Drop fax-only entries if non-fax alternatives exist
+        non_fax = [p for p in phone_candidates if p[2] > -5]
+        if non_fax:
+            phone_candidates = non_fax
+        raw_phones          = [p[0] for p in phone_candidates[:3]]
+        phone_overflow      = phone_candidates[3:]
 
-        # Collect raw email values from all email columns
-        raw_emails = []
+        # Collect + pre-score emails by column name + domain quality
+        email_candidates = []
         for ec in email_cols:
-            v = row.get(ec, "")
-            if v and not pd.isna(v) and str(v).strip():
-                raw_emails.append(str(v).strip())
+            v = row.get(ec)
+            if not v or pd.isna(v): continue
+            for part in _split_multi(v):
+                if part and part != "nan" and "@" in part:
+                    email_candidates.append((part, ec, _email_col_score(ec, part)))
+        email_candidates.sort(key=lambda x: -x[2])
+        raw_emails     = [e[0] for e in email_candidates[:3]]
+        email_overflow = email_candidates[3:]
 
-        # Collect raw addresses
-        raw_addresses = []
-        for ac in address_cols:
-            v = row.get(ac, "")
-            if v and not pd.isna(v) and str(v).strip():
-                raw_addresses.append(str(v).strip())
-
-        # Business verification (Google + SOS)
-        biz_result = verify_business_google(company)
-        sos_result = verify_sos_cobalt(company)
-        biz_garbage = is_garbage_business(company)
-        google_address = biz_result.get("found_address", "")
+        biz_result   = verify_business_google(company)
+        sos_result   = verify_sos_cobalt(company)
         google_phone = biz_result.get("found_phone", "")
 
-        # Add Google's phone as a candidate if not already present
         if google_phone and google_phone not in raw_phones:
             raw_phones.append(google_phone)
 
-        # Rank phones and emails
         ranked_phones = rank_phones(raw_phones, csv_name) if raw_phones else []
         ranked_emails = rank_emails(raw_emails) if raw_emails else []
-        verified_addresses = verify_addresses(raw_addresses, google_address)
 
-        # Build SeaCap row dict
+        state = ""
+        for ac in address_cols:
+            v = row.get(ac, "")
+            if v and not pd.isna(v) and str(v).strip():
+                state = extract_state(str(v))
+                if state:
+                    break
+
         sc = {}
+        best_phone = ranked_phones[0] if ranked_phones else {}
+        best_email = ranked_emails[0] if ranked_emails else {}
 
-        # Phones — up to 5
-        for idx in range(5):
-            n = idx + 1
-            if idx < len(ranked_phones):
-                p = ranked_phones[idx]
-                sc[f"SeaCap_Phone_{n}"]        = p["cleaned"]
-                sc[f"SeaCap_Phone_{n}_Status"]  = p["label"]
-                sc[f"SeaCap_Phone_{n}_Source"]  = phone_cols[idx] if idx < len(phone_cols) else "Google"
-            else:
-                sc[f"SeaCap_Phone_{n}"]        = ""
-                sc[f"SeaCap_Phone_{n}_Status"]  = ""
-                sc[f"SeaCap_Phone_{n}_Source"]  = ""
+        sc["Best Phone"]      = best_phone.get("cleaned", "")
+        sc["Phone Status"]    = best_phone.get("label", "")
+        sc["Cell/Landline"]   = line_type_to_label(best_phone.get("line_type", ""))
+        sc["Full Name Found"] = best_phone.get("caller_name", "")
+        sc["Best Email"]      = best_email.get("cleaned", "")
+        sc["Email Status"]    = best_email.get("label", "")
+        sc["State"]           = state
+        sc["_sos_check"]      = sos_result
 
-        # Emails — up to 5
-        for idx in range(5):
-            n = idx + 1
-            if idx < len(ranked_emails):
-                e = ranked_emails[idx]
-                sc[f"SeaCap_Email_{n}"]       = e["cleaned"]
-                sc[f"SeaCap_Email_{n}_Status"] = e["label"]
-            else:
-                sc[f"SeaCap_Email_{n}"]       = ""
-                sc[f"SeaCap_Email_{n}_Status"] = ""
+        for idx, ph in enumerate(ranked_phones[1:3], 2):
+            sc[f"SeaCap_Phone_{idx}"]        = ph.get("cleaned", "")
+            sc[f"SeaCap_Phone_{idx}_Status"] = ph.get("label", "")
+        for idx, em in enumerate(ranked_emails[1:3], 2):
+            sc[f"SeaCap_Email_{idx}"]        = em.get("cleaned", "")
+            sc[f"SeaCap_Email_{idx}_Status"] = em.get("label", "")
 
-        # Addresses — up to 4
-        for idx in range(4):
-            n = idx + 1
-            if idx < len(verified_addresses):
-                a = verified_addresses[idx]
-                sc[f"SeaCap_Address_{n}"]        = a["address"]
-                sc[f"SeaCap_Address_{n}_Status"]  = a["label"]
-            else:
-                sc[f"SeaCap_Address_{n}"]        = ""
-                sc[f"SeaCap_Address_{n}_Status"]  = ""
+        # Overflow phones/emails (rank 4+) → Notes with labels
+        notes_parts = []
+        if phone_overflow:
+            labels = []
+            for v, col_name, score in phone_overflow:
+                reason = "fax column" if score <= -5 else "rank 4+"
+                labels.append(f"{v} [{reason}]")
+            notes_parts.append("Extra phones (not verified): " + ", ".join(labels))
+        if email_overflow:
+            labels = []
+            for v, col_name, score in email_overflow:
+                local = v.split("@")[0].lower()
+                role  = any(local.startswith(r) for r in ["info","sales","admin","contact","support","hello","office"])
+                reason = "role-based" if role else "rank 4+"
+                labels.append(f"{v} [{reason}]")
+            notes_parts.append("Extra emails (not verified): " + ", ".join(labels))
+        sc["Notes"] = " | ".join(notes_parts) if notes_parts else ""
 
-        # Business checks
-        sc["SeaCap_Business_Check"] = biz_result.get("status", "UNKNOWN")
-        sc["SeaCap_SOS_Check"]      = sos_result
-        sc["SeaCap_Business_Garbage"] = biz_garbage
-
-        # Name/phone match
-        best_phone_name_match = ranked_phones[0]["name_match"] if ranked_phones else "UNKNOWN"
-        sc["SeaCap_Name_Match"] = best_phone_name_match
-
-        # Build plain-English flag reason — only real problems, not NOT-FOUND
         reasons = []
-        if ranked_phones and ranked_phones[0]["label"] == "MISMATCH":
+        if best_phone.get("label") == "MISMATCH":
             reasons.append("Phone belongs to different person")
-        if ranked_phones and ranked_phones[0]["label"] == "VOIP":
+        if best_phone.get("label") == "VOIP":
             reasons.append("Phone is VoIP")
-        if ranked_emails and ranked_emails[0]["label"] == "SPAMTRAP":
+        if best_email.get("label") == "SPAMTRAP":
             reasons.append("Email is spamtrap")
-        if ranked_emails and ranked_emails[0]["label"] == "DISPOSABLE":
+        if best_email.get("label") == "DISPOSABLE":
             reasons.append("Email is disposable")
         if biz_result.get("status") in ("VERIFIED-INACTIVE", "PERMANENTLY_CLOSED"):
             reasons.append("Business closed/dissolved")
-        if biz_garbage:
-            reasons.append(biz_garbage)
-        sc["SeaCap_Flag_Reason"] = " | ".join(reasons)  # blank = clean
+        sc["Flag Reason"] = " | ".join(reasons)
 
-        seacap_rows.append(sc)
+        with _lock:
+            _done_count[0] += 1
+            _progress()
 
-        # Per-row terminal output
-        row_num   = seacap_rows.__len__()
-        phone_out = f"{sc.get('SeaCap_Phone_1','')} [{sc.get('SeaCap_Phone_1_Status','—')}]" if sc.get('SeaCap_Phone_1') else "❌ no phone"
-        email_out = f"{sc.get('SeaCap_Email_1','')} [{sc.get('SeaCap_Email_1_Status','—')}]" if sc.get('SeaCap_Email_1') else "❌ no email"
-        biz_out   = sc.get('SeaCap_Business_Check', 'UNKNOWN')
-        sos_out   = sc.get('SeaCap_SOS_Check', 'UNKNOWN')
-        flag_out  = sc.get('SeaCap_Flag_Reason', '')
-        print(f"\n[{row_num}] {csv_name or company or 'Unknown'}")
-        print(f"   📞 {phone_out}")
-        print(f"   📧 {email_out}")
-        # Only print business checks if they found something useful
-        if biz_out not in ("NOT-FOUND", "UNKNOWN", ""):
-            print(f"   🏢 Google: {biz_out}")
-        if sos_out not in ("UNKNOWN", "NOT-FOUND", ""):
-            print(f"   🏛  SOS: {sos_out}")
-        if flag_out:
-            print(f"   ⚠️  {flag_out}")
+        return i, sc
 
-    # Merge SeaCap columns into df
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    VERIFY_WORKERS = 10
+
+    results_map = {}
+    with ThreadPoolExecutor(max_workers=VERIFY_WORKERS) as executor:
+        futures = {executor.submit(_process_row, (i, row)): i for i, row in df.iterrows()}
+        for f in as_completed(futures):
+            idx, sc = f.result()
+            results_map[idx] = sc
+
+    seacap_rows = [results_map[i] for i in df.index]
+
+    # Merge seacap cols into df
     seacap_df = pd.DataFrame(seacap_rows, index=df.index)
+    sys.stderr.write('\n')
+    sys.stderr.flush()
 
-    # ── DNC flags from known columns ─────────────────────────────────
-    for dnc_col in ["Closed by DNC", "SMS Opted Out", "DNC", "Do Not Call"]:
-        if dnc_col in df.columns:
-            df.loc[df[dnc_col].astype(str).str.upper().isin(["Y","YES","1","TRUE"]), "_dnc_flag"] = "YES"
-
-    # Merge SeaCap cols + original df (SeaCap first, original after)
     df_out = pd.concat([seacap_df, df], axis=1)
 
-    # Drop internal _ columns from output
-    internal_cols = [c for c in df_out.columns if c.startswith("_")]
-    df_out = df_out.drop(columns=internal_cols)
+    # Dedupe columns created by concat (seacap cols take priority — keep first occurrence)
+    df_out = df_out.loc[:, ~df_out.columns.duplicated(keep="first")]
 
-    # Sort into 4 lists
-    print("\n📋 Sorting into 4 lists...")
-    # Re-add _dnc_flag and _status for get_list
-    df_out["_dnc_flag"] = df["_dnc_flag"]
-    df_out["_status"]   = df["_status"]
-    df_out["List"] = df_out.apply(get_list, axis=1)
-    df_out["Fix_Reason"] = ""
-
-    def get_fix_reason(row):
-        if row["List"] != "Needs Fixing":
-            return ""
-        reasons = []
-        if not str(row.get("SeaCap_Phone_1", "")).strip():
-            reasons.append("Missing phone")
-        if not str(row.get("SeaCap_Email_1", "")).strip():
-            reasons.append("Missing email")
-        if str(row.get("SeaCap_Phone_1_Status", "")) == "MISMATCH":
-            reasons.append("Phone belongs to different person")
-        if str(row.get("SeaCap_SOS_Check", "")).lower() == "inactive":
-            reasons.append("SOS inactive")
-        if str(row.get("SeaCap_Email_1_Status", "")) in ["INVALID", "SPAMTRAP", "DISPOSABLE"]:
-            reasons.append("Bad email")
-        return ", ".join(reasons) if reasons else "Incomplete data"
-
-    df_out["Fix_Reason"] = df_out.apply(get_fix_reason, axis=1)
-
-    # Drop the temp internal cols from output
-    df_out = df_out.drop(columns=["_dnc_flag", "_status"], errors="ignore")
-
-    # Strip illegal chars
-    str_cols = df_out.select_dtypes(include=["object"]).columns
-    for c in str_cols:
-        df_out[c] = df_out[c].apply(strip_illegal)
-
-    df_qualified = df_out[df_out["List"] == "Qualified"]
-    df_fixing    = df_out[df_out["List"] == "Needs Fixing"]
-    df_dnc       = df_out[df_out["List"] == "DNC"]
-    df_funded    = df_out[df_out["List"] == "Funded"]
-    df_flagged   = df_out[df_out["Duplicate_Flag"].ne("")]
-
-    # ── Rename detected original cols to standard names ──────────────────
+    # ── RENAME DETECTED ORIGINAL COLS → STANDARD NAMES ──────────
     rename_map = {}
-    if col.get("first")   and col["first"]   != "First Name":  rename_map[col["first"]]   = "First Name"
-    if col.get("last")    and col["last"]     != "Last Name":   rename_map[col["last"]]    = "Last Name"
-    if col.get("company") and col["company"]  != "Company":     rename_map[col["company"]] = "Company"
+    if col.get("first")   and col["first"]   != "First Name": rename_map[col["first"]]   = "First Name"
+    if col.get("last")    and col["last"]     != "Last Name":  rename_map[col["last"]]    = "Last Name"
+    if col.get("company") and col["company"]  != "Company":    rename_map[col["company"]] = "Company"
     if rename_map:
         df_out = df_out.rename(columns=rename_map)
 
-    # Rename SeaCap columns to human-readable names
-    df_out = df_out.rename(columns={
-        "SeaCap_Phone_1":         "Best Phone",
-        "SeaCap_Phone_1_Status":  "Phone Status",
-        "SeaCap_Phone_1_Source":  "Phone Found In",
-        "SeaCap_Email_1":         "Best Email",
-        "SeaCap_Email_1_Status":  "Email Status",
-        "SeaCap_Address_1":       "Best Address",
-        "SeaCap_Address_1_Status":"Address Status",
-    })
+    # ── CLASSIFY + ASSIGN COLUMNS ───────────────────────────────
+    # Attach internal cols needed by get_list
+    df_out["_sos_check"] = seacap_df["_sos_check"]
+    df_out["_dnc_flag"]  = df["_dnc_flag"]
+    df_out["_status"]    = df["_status"]
 
-    # Drop original phone/email/address columns — SeaCap verified versions replace them
-    orig_phone_cols   = [c for c in phone_cols   if c in df_out.columns]
-    orig_email_cols   = [c for c in email_cols   if c in df_out.columns]
-    orig_address_cols = [c for c in address_cols if c in df_out.columns]
-    df_out = df_out.drop(columns=orig_phone_cols + orig_email_cols + orig_address_cols, errors="ignore")
+    # Run classification — store separately so it survives column cleanup
+    _lt = df_out.apply(get_list, axis=1)
 
-    # Drop SeaCap columns that are entirely empty
-    all_seacap = [c for c in df_out.columns if c.startswith("SeaCap_")]
-    drop_empty = [c for c in all_seacap if df_out[c].replace("", pd.NA).isna().all()]
-    df_out = df_out.drop(columns=drop_empty)
+    df_out["List"] = source_name  # what Adam sees — source name not "Qualified"
 
-    # Also drop Phone_Found_In — not useful for reps
-    df_out = df_out.drop(columns=["Phone Found In"], errors="ignore")
+    # ── FIX REASON ───────────────────────────────────────────────
+    def get_fix_reason(row, list_type):
+        if list_type != "Needs Fixing":
+            return ""
+        reasons = []
+        if not str(row.get("Best Phone", "")).strip():
+            reasons.append("Missing phone")
+        if not str(row.get("Best Email", "")).strip():
+            reasons.append("Missing email")
+        if str(row.get("Phone Status", "")) == "MISMATCH":
+            reasons.append("Phone belongs to different person")
+        if str(row.get("_sos_check", "")).lower() == "inactive":
+            reasons.append("SOS inactive")
+        if str(row.get("Email Status", "")) in ["INVALID", "SPAMTRAP", "DISPOSABLE"]:
+            reasons.append("Bad email")
+        return ", ".join(reasons) if reasons else "Incomplete data"
 
-    # ── Column order ──────────────────────────────────────────────────────
-    # Qualified list: Fix_Reason + Duplicate_Flag at back (usually empty)
-    # Needs Fixing / DNC: Fix_Reason + Duplicate_Flag at front
-    extra_phones = sorted([c for c in df_out.columns if re.match(r"SeaCap_Phone_[2-5]", c)])
-    extra_emails = sorted([c for c in df_out.columns if re.match(r"SeaCap_Email_[2-5]", c)])
-    extra_addrs  = sorted([c for c in df_out.columns if re.match(r"SeaCap_Address_[2-4]", c)])
-    ref_end      = [c for c in ["SeaCap_Business_Check", "SeaCap_SOS_Check",
-                                 "SeaCap_Name_Match", "SeaCap_Flag_Reason",
-                                 "SeaCap_Business_Garbage"] if c in df_out.columns]
-    decision     = [c for c in ["Fix_Reason", "Duplicate_Flag"] if c in df_out.columns]
-    core         = [c for c in ["First Name", "Last Name", "Company", "List",
-                                 "Best Phone", "Phone Status",
-                                 "Best Email", "Email Status",
-                                 "Best Address", "Address Status",
-                                 "Annual Revenue"] if c in df_out.columns]
-    already      = set(core + extra_phones + extra_emails + extra_addrs + ref_end + decision)
-    other_orig   = [c for c in df_out.columns if c not in already]
+    df_out["Fix_Reason"] = [get_fix_reason(df_out.iloc[i], _lt.iloc[i]) for i in range(len(df_out))]
 
-    def make_ordered(front_decision):
-        base = core + extra_phones + extra_emails + extra_addrs + other_orig + ref_end
-        if front_decision:
-            ordered = decision + base
-        else:
-            ordered = base + decision
-        seen = set()
-        return [c for c in ordered if c in df_out.columns and not (c in seen or seen.add(c))]
+    def get_action_to_fix(row, list_type):
+        if list_type != "Needs Fixing":
+            return ""
+        phone_label = str(row.get("Phone Status", "")).upper()
+        email_label = str(row.get("Email Status", "")).upper()
+        phone       = str(row.get("Best Phone", "")).strip()
+        email       = str(row.get("Best Email", "")).strip()
+        first       = str(row.get("First Name", "")).strip()
+        last        = str(row.get("Last Name", "")).strip()
+        company     = str(row.get("Company", "")).strip()
 
-    # Re-slice after reorder — apply per-list ordering
-    df_qualified = df_out[df_out["List"] == "Qualified"].copy()
-    df_fixing    = df_out[df_out["List"] == "Needs Fixing"].copy()
-    df_dnc       = df_out[df_out["List"] == "DNC"].copy()
-    df_funded    = df_out[df_out["List"] == "Funded"].copy()
-    df_flagged   = df_out[df_out["Duplicate_Flag"].ne("")].copy()
+        if phone_label == "MISMATCH" and not email:
+            return "Find correct phone number or email address"
+        if phone_label == "MISMATCH" and email_label == "INVALID":
+            return "Phone belongs to someone else — correct email address"
+        if phone_label == "VERIFIED-NO-NAME" and email_label == "INVALID":
+            if not _email_name_match(email, first, last, company):
+                return "Correct email address — no name match found"
+        if phone_label == "FORMAT-BAD" and email_label == "INVALID":
+            return "Fix phone number format and correct email"
+        if phone_label == "FORMAT-BAD":
+            return "Fix phone number format"
+        if not phone and email_label == "INVALID":
+            return "Find phone number — email invalid"
+        if not phone and not email:
+            return "Find phone number and email address"
+        return "Verify contact details"
 
-    df_qualified = df_qualified[make_ordered(front_decision=False)]
-    df_fixing    = df_fixing[make_ordered(front_decision=True)]
-    df_dnc       = df_dnc[make_ordered(front_decision=True)]
-    df_funded    = df_funded[make_ordered(front_decision=False)]
-    df_flagged   = df_flagged[make_ordered(front_decision=True)]
-    df_out       = df_out[make_ordered(front_decision=False)]
+    df_out["Action to Fix"] = [get_action_to_fix(df_out.iloc[i], _lt.iloc[i]) for i in range(len(df_out))]
+
+    # Add Status + Adam List based on list type
+    df_out["Status"]    = _lt.map(lambda lt: _LIST_META.get(lt, ("", ""))[0])
+    df_out["Adam List"] = _lt.map(lambda lt: _LIST_META.get(lt, ("", ""))[1])
+    df_out["Priority"]  = df_out.apply(get_priority, axis=1)
+
+    # Drop internal cols before column ordering
+    df_out = df_out.drop(columns=["_dnc_flag", "_status", "_sos_check"], errors="ignore")
+
+    # Drop alt phone/email cols that are fully empty (CSV had no alts)
+    alt_cols = [c for c in df_out.columns if c.startswith("SeaCap_Phone_") or c.startswith("SeaCap_Email_")]
+    empty_alts = [c for c in alt_cols if df_out[c].replace("", pd.NA).isna().all()]
+    df_out = df_out.drop(columns=empty_alts, errors="ignore")
+
+    # Strip illegal chars
+    for c in df_out.select_dtypes(include=["object"]).columns:
+        df_out[c] = df_out[c].apply(strip_illegal)
+
+    # ── APPLY FIXED COLUMN ORDER ─────────────────────────────────
+    # Alt cols appended after fixed cols
+    alt_cols_remaining = [c for c in df_out.columns if c.startswith("SeaCap_Phone_") or c.startswith("SeaCap_Email_")]
+    ordered_cols = [c for c in FIXED_COLS if c in df_out.columns] + alt_cols_remaining
+    df_out = df_out[ordered_cols]
+
+    # ── SPLIT INTO 4 LISTS (using _lt series) ────────────────────
+
+    df_qualified = df_out[_lt == "Qualified"].copy()
+    df_fixing    = df_out[_lt == "Needs Fixing"].copy()
+    # "Action to Fix" already computed in df_out — carried into df_fixing
+    df_dnc       = df_out[_lt == "DNC"].copy()
+    df_funded    = df_out[_lt == "Funded"].copy()
+    dup_col      = df_out["Duplicate_Flag"] if "Duplicate_Flag" in df_out.columns else pd.Series("", index=df_out.index)
+    df_flagged   = df_out[dup_col.ne("")].copy()
+
+    # ── SORT BY QUALITY (highest first) ─────────────────────────
+    for frame in [df_qualified, df_fixing, df_dnc, df_funded]:
+        frame["_q"] = frame.apply(quality_score, axis=1)
+        frame.sort_values("_q", ascending=False, inplace=True)
+        frame.drop(columns=["_q"], inplace=True)
 
     def save_xlsx(df, path):
-        """Save with auto-fit column widths and frozen header row."""
         from openpyxl.utils import get_column_letter
         from openpyxl.styles import Font, PatternFill, Alignment
         with pd.ExcelWriter(str(path), engine="openpyxl") as writer:
             df.to_excel(writer, index=False, sheet_name="Leads")
             ws = writer.sheets["Leads"]
-            # Freeze header
             ws.freeze_panes = "A2"
-            # Bold + grey header
             header_fill = PatternFill("solid", fgColor="D9D9D9")
             for cell in ws[1]:
                 cell.font      = Font(bold=True)
                 cell.fill      = header_fill
                 cell.alignment = Alignment(horizontal="center")
-            # Auto-fit widths (cap at 50)
             for col_idx, col_cells in enumerate(ws.columns, 1):
                 max_len = max((len(str(c.value or "")) for c in col_cells), default=10)
                 ws.column_dimensions[get_column_letter(col_idx)].width = min(max_len + 2, 50)
 
-    # Save — skip empty lists
+    # Per-list column orders
+    QUALIFIED_COLS = [
+        "First Name", "Last Name", "Company", "Adam List", "Priority",
+        "Best Phone", "Phone Status", "Cell/Landline",
+        "Best Email", "Email Status", "State",
+        "Annual Revenue", "Full Name Found", "Duplicate_Flag",
+        "Status", "List",
+    ]
+    FIXING_COLS = [
+        "First Name", "Last Name", "Company", "Adam List", "Flag Reason",
+        "Best Phone", "Phone Status", "Cell/Landline",
+        "Best Email", "Email Status", "State",
+        "Annual Revenue", "Full Name Found", "List", "Duplicate_Flag",
+        "Status", "Fix_Reason", "Action to Fix",
+    ]
+
+    def _reorder(df, cols):
+        keep = [c for c in cols if c in df.columns]
+        return df[keep]
+
     print("💾 Saving...")
-    save_xlsx(df_out, OUTPUT_DIR / f"{STEM}_all.xlsx")
-    if len(df_qualified): save_xlsx(df_qualified, OUTPUT_DIR / f"{STEM}_list1_qualified.xlsx")
-    if len(df_fixing):    save_xlsx(df_fixing,    OUTPUT_DIR / f"{STEM}_list2_needs_fixing.xlsx")
+    save_xlsx(df_out,       OUTPUT_DIR / f"{STEM}_all.xlsx")
+    if len(df_qualified): save_xlsx(_reorder(df_qualified, QUALIFIED_COLS), OUTPUT_DIR / f"{STEM}_list1_qualified.xlsx")
+    if len(df_fixing):    save_xlsx(_reorder(df_fixing,    FIXING_COLS),    OUTPUT_DIR / f"{STEM}_list2_needs_fixing.xlsx")
     if len(df_dnc):       save_xlsx(df_dnc,       OUTPUT_DIR / f"{STEM}_list3_dnc.xlsx")
     if len(df_funded):    save_xlsx(df_funded,    OUTPUT_DIR / f"{STEM}_list4_funded.xlsx")
     if len(df_flagged):   save_xlsx(df_flagged,   OUTPUT_DIR / f"{STEM}_flagged_for_review.xlsx")
@@ -1009,7 +1169,7 @@ def main():
         "list2_needs_fixing": len(df_fixing),
         "list3_dnc": len(df_dnc),
         "list4_funded": len(df_funded),
-        "flagged_duplicates": len(df_flagged)
+        "flagged_duplicates": len(df_flagged),
     }
     print(f"SUMMARY_JSON:{json.dumps(summary)}")
 

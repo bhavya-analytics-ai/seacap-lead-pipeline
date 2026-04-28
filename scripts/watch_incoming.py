@@ -13,8 +13,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")   # repo root
 
 SUPABASE_URL  = os.getenv("SUPABASE_URL", "").strip().strip('"').strip("'").strip()
-SUPABASE_KEY  = os.getenv("SUPABASE_ANON_KEY", "").strip().strip('"').strip("'").strip()
-PUSH_TO       = os.getenv("PUSH_TO", "").strip().lower()  # "close", "vanillasoft", or "both"
+SUPABASE_KEY  = (os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_ANON_KEY") or "").strip().strip('"').strip("'").strip()
 
 # ============================================================
 # CONFIGURATION
@@ -34,10 +33,31 @@ PROCESSED_MAX_DAYS = 30
 # ============================================================
 # LOGGING
 # ============================================================
-class ErrorHighlightFormatter(logging.Formatter):
-    """Normal lines: timestamp + level + msg. Errors: big visible block."""
+class ConsoleFormatter(logging.Formatter):
+    """Terminal: normal lines clean, errors = loud ANSI red block."""
     NORMAL_FMT = "%(asctime)s  %(levelname)-7s  %(message)s"
-    ERROR_FMT  = "\n%(asctime)s  ❌ ERROR ❌\n  %(message)s\n"
+
+    def format(self, record):
+        if record.levelno >= logging.ERROR:
+            self._style._fmt = self.NORMAL_FMT
+            base = super().format(record)
+            RED   = "\033[1;97;41m"  # bold white on red bg
+            RESET = "\033[0m"
+            border = RED + "█" * 60 + RESET
+            return f"\n{border}\n{RED}  ❌  ERROR  —  {record.getMessage()}{RESET}\n{border}\n"
+        else:
+            self._style._fmt = self.NORMAL_FMT
+            return super().format(record)
+
+class FileFormatter(logging.Formatter):
+    """Log file: normal lines clean, errors = bordered block."""
+    NORMAL_FMT = "%(asctime)s  %(levelname)-7s  %(message)s"
+    ERROR_FMT  = (
+        "\n" + "=" * 60 + "\n"
+        "❌  ERROR  |  %(asctime)s\n"
+        "%(message)s\n"
+        + "=" * 60
+    )
 
     def format(self, record):
         if record.levelno >= logging.ERROR:
@@ -46,19 +66,18 @@ class ErrorHighlightFormatter(logging.Formatter):
             self._style._fmt = self.NORMAL_FMT
         return super().format(record)
 
-_formatter = ErrorHighlightFormatter(datefmt="%Y-%m-%d %H:%M:%S")
+from logging.handlers import RotatingFileHandler
 
 _console_handler = logging.StreamHandler(sys.stdout)
-_console_handler.setFormatter(_formatter)
+_console_handler.setFormatter(ConsoleFormatter(datefmt="%Y-%m-%d %H:%M:%S"))
 
-from logging.handlers import RotatingFileHandler
 _file_handler = RotatingFileHandler(
     Path(__file__).parent / "pipeline.log",
-    maxBytes=5 * 1024 * 1024,  # 5MB per file
-    backupCount=3,              # keep last 3 rotated files
+    maxBytes=5 * 1024 * 1024,
+    backupCount=3,
     encoding="utf-8"
 )
-_file_handler.setFormatter(_formatter)
+_file_handler.setFormatter(FileFormatter(datefmt="%Y-%m-%d %H:%M:%S"))
 
 logging.basicConfig(level=logging.INFO, handlers=[_console_handler, _file_handler])
 log = logging.getLogger(__name__)
@@ -75,12 +94,26 @@ def run_pipeline(filepath: Path):
 
     try:
         log.info(f"Running clean_leads.py on: {filepath.name}")
-        result = subprocess.run(
+        import io
+        proc = subprocess.Popen(
             [sys.executable, str(CLEAN_SCRIPT), str(filepath)],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=sys.stderr,   # stream progress bar live to terminal
             text=True,
-            timeout=600  # 10 min max
         )
+        try:
+            stdout_data, _ = proc.communicate(timeout=1800)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout_data, _ = proc.communicate()
+            raise subprocess.TimeoutExpired(proc.args, 1800)
+
+        class _FakeResult:
+            def __init__(self, returncode, stdout, stderr):
+                self.returncode = returncode
+                self.stdout = stdout
+                self.stderr = ""
+        result = _FakeResult(proc.returncode, stdout_data, "")
 
         if result.returncode == 0:
             log.info(f"Pipeline complete for: {filepath.name}")
@@ -96,20 +129,13 @@ def run_pipeline(filepath: Path):
 
             stem = filepath.stem
 
-            # Auto-push to CRM based on PUSH_TO env var
+            # Auto-push to Close CRM
             pushed_to = []
-            if PUSH_TO in ("close", "both"):
-                try:
-                    push_from_local(stem, "1")
-                    pushed_to.append("Close CRM")
-                except Exception as e:
-                    log.error(f"Close push failed: {e}")
-            if PUSH_TO in ("vanillasoft", "both"):
-                try:
-                    push_from_local(stem, "2")
-                    pushed_to.append("VanillaSoft")
-                except Exception as e:
-                    log.error(f"VanillaSoft push failed: {e}")
+            try:
+                push_from_local(stem, "1")
+                pushed_to.append("Close CRM")
+            except Exception as e:
+                log.error(f"Close push failed: {e}")
 
             # SMS notification — sent after push
             try:
@@ -118,15 +144,20 @@ def run_pipeline(filepath: Path):
             except Exception as e:
                 log.warning(f"SMS notify failed (non-fatal): {e}")
         else:
-            log.error(f"❌ PIPELINE FAILED for: {filepath.name}")
-            # Show clean error — last non-empty line of stderr
-            if result.stderr:
-                lines = [l.strip() for l in result.stderr.strip().splitlines() if l.strip()]
-                log.error(f"   ERROR: {lines[-1] if lines else 'unknown error'}")
-                log.error(f"   Full traceback logged to pipeline.log")
-                # Full traceback only to file, not console
-                for line in result.stderr.splitlines():
-                    log.debug(line)
+            # Extract human-readable reason from stdout
+            reason = None
+            if result.stdout and "FILE REJECTED" in result.stdout:
+                lines = result.stdout.splitlines()
+                start = 0
+                for i, line in enumerate(lines):
+                    if "FILE REJECTED" in line:
+                        start = i - 1 if i > 0 and "=" * 10 in lines[i - 1] else i
+                        break
+                reason = "\n".join(lines[start:]).rstrip()
+            if not reason:
+                reason = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else "unknown error"
+
+            log.error(f"PIPELINE FAILED — {filepath.name}\n\n{reason or 'unknown error'}\n")
             log_to_supabase(filepath.name, {}, "failed")
 
     except subprocess.TimeoutExpired:
@@ -144,11 +175,15 @@ def run_pipeline(filepath: Path):
         shutil.move(str(filepath), str(dest))
         log.info(f"Moved to processed/: {dest.name}")
 
-        # Upload original file to Supabase Storage under originals/YYYY-MM-DD/
+        # Upload original + cleaned outputs to Supabase Storage
         try:
             upload_original_to_supabase(dest)
         except Exception as e:
             log.warning(f"Original upload to Supabase failed (non-fatal): {e}")
+        try:
+            upload_outputs_to_supabase(filepath.stem)
+        except Exception as e:
+            log.warning(f"Output upload to Supabase failed (non-fatal): {e}")
 
         log.info("-" * 60)
 
@@ -156,27 +191,20 @@ def run_pipeline(filepath: Path):
 # POPUP + LOCAL PUSH
 # ============================================================
 def push_from_local(stem: str, choice: str):
-    """Push leads to CRM based on choice: 1=Close, 2=VanillaSoft, 3=Both."""
-    targets = []
-    if choice in ["1", "3"]:
-        targets.append(("close_push_leads.py", "Close CRM"))
-    if choice in ["2", "3"]:
-        targets.append(("vanillasoft_push_leads.py", "VanillaSoft"))
-
-    for script_name, crm_name in targets:
-        push_script = BASE_DIR / "scripts" / script_name
-        if not push_script.exists():
-            log.warning(f"{script_name} not found — skipping {crm_name}")
-            continue
-        log.info(f"Pushing to {crm_name}: {stem}")
-        result = subprocess.run(
-            [sys.executable, str(push_script), stem],
-            capture_output=True, text=True, timeout=3600
-        )
-        if result.returncode == 0:
-            log.info(f"{crm_name} push complete")
-        else:
-            log.error(f"{crm_name} push failed: {result.stderr.strip()}")
+    """Push leads to Close CRM."""
+    push_script = BASE_DIR / "scripts" / "close_push_leads.py"
+    if not push_script.exists():
+        log.warning("close_push_leads.py not found — skipping")
+        return
+    log.info(f"Pushing to Close CRM: {stem}")
+    result = subprocess.run(
+        [sys.executable, str(push_script), stem],
+        capture_output=True, text=True, timeout=3600
+    )
+    if result.returncode == 0:
+        log.info("Close CRM push complete")
+    else:
+        log.error(f"Close CRM push failed: {result.stderr.strip()}")
 
 
 def show_popup(stem: str, summary: dict):
@@ -210,29 +238,15 @@ def show_popup(stem: str, summary: dict):
                 f"(Adam can also approve via WhatsApp)"
             )
 
-            # Ask Yes/No for Close first
             push_close = messagebox.askyesno("SeaCap Lead Pipeline", msg)
-
-            # Ask Yes/No for VanillaSoft
-            push_vanilla = messagebox.askyesno(
-                "SeaCap Lead Pipeline",
-                f"Also push to VanillaSoft?"
-            )
-
             root.destroy()
 
-            if push_close and push_vanilla:
-                choice = "3"
-            elif push_close:
-                choice = "1"
-            elif push_vanilla:
-                choice = "2"
-            else:
+            if not push_close:
                 log.info("Local popup: push skipped by user")
                 return
 
-            log.info(f"Local popup: pushing choice={choice}")
-            push_from_local(stem, choice)
+            log.info("Local popup: pushing to Close CRM")
+            push_from_local(stem, "1")
 
         except Exception as e:
             log.warning(f"Popup failed (non-fatal): {e}")
@@ -283,7 +297,41 @@ def upload_original_to_supabase(filepath: Path):
     if r.status_code in (200, 201):
         log.info(f"Original uploaded to Supabase: originals/{date_folder}/{fname}")
     else:
-        log.warning(f"Original upload failed: {r.status_code} {r.text[:100]}")
+        log.debug(f"Original upload skipped (Storage RLS): {r.status_code}")
+
+def upload_outputs_to_supabase(stem: str):
+    """Upload all cleaned output Excels to Supabase Storage under outputs/YYYY-MM-DD/{stem}/."""
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return
+    import requests
+    date_folder = time.strftime("%Y-%m-%d")
+    suffixes = [
+        f"{stem}_list1_qualified.xlsx",
+        f"{stem}_list2_needs_fixing.xlsx",
+        f"{stem}_list3_dnc.xlsx",
+        f"{stem}_list4_funded.xlsx",
+        f"{stem}_all.xlsx",
+        f"{stem}_flagged_for_review.xlsx",
+    ]
+    uploaded = 0
+    for fname in suffixes:
+        fpath = OUTPUT_DIR / fname
+        if not fpath.exists():
+            continue
+        url = f"{SUPABASE_URL}/storage/v1/object/pipeline-batches/outputs/{date_folder}/{stem}/{fname}"
+        with open(fpath, "rb") as f:
+            r = requests.post(url, headers={
+                "apikey":        SUPABASE_KEY,
+                "Authorization": f"Bearer {SUPABASE_KEY}",
+                "Content-Type":  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "x-upsert":      "true"
+            }, data=f, timeout=60)
+        if r.status_code in (200, 201):
+            uploaded += 1
+        else:
+            log.debug(f"Output upload skipped ({fname}): {r.status_code}")
+    if uploaded:
+        log.info(f"Uploaded {uploaded} output file(s) to Supabase: outputs/{date_folder}/{stem}/")
 
 # ============================================================
 # MAIN
@@ -325,12 +373,15 @@ if __name__ == "__main__":
     PROCESSED_DIR.mkdir(exist_ok=True)
     OUTPUT_DIR.mkdir(exist_ok=True)
 
-    # Drain any failed Close pushes from previous runs
-    try:
-        from close_push_leads import replay_queue
-        replay_queue()
-    except Exception as e:
-        log.warning(f"Queue replay failed (non-fatal): {e}")
+    # Drain any failed Close pushes in background — don't block startup
+    import threading
+    def _replay():
+        try:
+            from close_push_leads import replay_queue
+            replay_queue()
+        except Exception as e:
+            log.warning(f"Queue replay failed (non-fatal): {e}")
+    threading.Thread(target=_replay, daemon=True).start()
 
     # Clean up old processed files on startup
     cleanup_processed()
