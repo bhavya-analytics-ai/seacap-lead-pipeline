@@ -118,15 +118,19 @@ def run_pipeline(filepath: Path):
         result = _FakeResult(proc.returncode, stdout_data, "")
 
         if result.returncode == 0:
-            log.info(f"Pipeline complete for: {filepath.name}")
-            if result.stdout:
-                log.info(result.stdout.strip())
-            # Parse JSON summary and log to Supabase
+            # Parse JSON summary
             summary = {}
             for line in result.stdout.splitlines():
                 if line.startswith("SUMMARY_JSON:"):
                     summary = json.loads(line.replace("SUMMARY_JSON:", ""))
                     break
+            # Clean one-line summary instead of full stdout
+            log.info(f"Pipeline complete: {filepath.name} | "
+                     f"Total: {summary.get('total_leads', 0)} | "
+                     f"Qualified: {summary.get('list1_qualified', 0)} | "
+                     f"Needs Fix: {summary.get('list2_needs_fixing', 0)} | "
+                     f"DNC: {summary.get('list3_dnc', 0)} | "
+                     f"Funded: {summary.get('list4_funded', 0)}")
             log_to_supabase(filepath.name, summary, "success")
 
             stem = filepath.stem

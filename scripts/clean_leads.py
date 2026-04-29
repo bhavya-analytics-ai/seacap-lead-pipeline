@@ -427,12 +427,18 @@ def get_list(row):
     return "Needs Fixing"
 
 def get_priority(row):
-    """TEXT = verified or mismatch cell. EMAIL = no-name or landline."""
+    """TEXT = any verified cell phone. EMAIL only when phone is weak AND email is good."""
     phone_label = str(row.get("Phone Status", "")).upper()
+    email_label = str(row.get("Email Status", "")).upper()
     line_type   = str(row.get("Cell/Landline", "")).upper()
-    if phone_label in ("VERIFIED", "MISMATCH") and line_type == "CELL":
+    # Any verified cell → TEXT (best for SMS/MCA)
+    if phone_label in ("VERIFIED", "VERIFIED-NO-NAME", "MISMATCH") and line_type == "CELL":
         return "TEXT"
-    return "EMAIL"
+    # Phone is weak (UNKNOWN/landline/missing) — only use EMAIL if email is actually verified
+    if email_label in ("VALID", "OK", "VERIFIED"):
+        return "EMAIL"
+    # Both weak — fall back to TEXT if any phone exists, else EMAIL
+    return "TEXT" if str(row.get("Best Phone", "")).strip() else "EMAIL"
 
 def quality_score(row):
     """Score a row by data quality — higher = better lead."""
