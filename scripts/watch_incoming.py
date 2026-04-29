@@ -29,8 +29,9 @@ CLEAN_SCRIPT  = BASE_DIR / "scripts" / "clean_leads.py"
 # Only watch these file types
 WATCHED_EXTENSIONS = {".csv", ".xlsx", ".xls"}
 
-# Delete files from processed/ older than this many days
-PROCESSED_MAX_DAYS = 30
+# Delete files from processed/ and outputs/ older than this many days
+PROCESSED_MAX_DAYS = 45
+OUTPUT_MAX_DAYS    = 45
 
 # ============================================================
 # LOGGING
@@ -379,6 +380,15 @@ def cleanup_processed():
             f.unlink()
             log.info(f"Deleted old processed file: {f.name} (older than {PROCESSED_MAX_DAYS} days)")
 
+def cleanup_outputs():
+    """Delete files in output/ older than OUTPUT_MAX_DAYS days."""
+    now = time.time()
+    cutoff = now - (OUTPUT_MAX_DAYS * 86400)
+    for f in OUTPUT_DIR.iterdir():
+        if f.is_file() and f.stat().st_mtime < cutoff:
+            f.unlink()
+            log.info(f"Deleted old output file: {f.name} (older than {OUTPUT_MAX_DAYS} days)")
+
 if __name__ == "__main__":
     # Make sure folders exist
     INCOMING_DIR.mkdir(exist_ok=True)
@@ -395,8 +405,9 @@ if __name__ == "__main__":
             log.warning(f"Queue replay failed (non-fatal): {e}")
     threading.Thread(target=_replay, daemon=True).start()
 
-    # Clean up old processed files on startup
+    # Clean up old processed + output files on startup
     cleanup_processed()
+    cleanup_outputs()
 
     log.info("=" * 60)
     log.info("SeaCap Lead Pipeline — Folder Watcher Started")
