@@ -5,6 +5,8 @@ import subprocess
 import sys
 import json
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -16,6 +18,7 @@ SUPABASE_URL  = os.getenv("SUPABASE_URL", "").strip().strip('"').strip("'").stri
 SUPABASE_KEY  = (os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_ANON_KEY") or "").strip().strip('"').strip("'").strip()
 PUSH_TO_CLOSE    = os.getenv("PUSH_TO_CLOSE",    "true").strip().lower() != "false"
 PUSH_TO_SUPABASE = os.getenv("PUSH_TO_SUPABASE", "true").strip().lower() != "false"
+MAX_CONCURRENT   = int(os.getenv("MAX_CONCURRENT", "3"))   # max files processed at once
 
 # ============================================================
 # CONFIGURATION
@@ -276,7 +279,7 @@ class IncomingHandler(FileSystemEventHandler):
             return
         filepath = Path(event.src_path)
         if filepath.suffix.lower() in WATCHED_EXTENSIONS:
-            run_pipeline(filepath)
+            _pipeline_executor.submit(run_pipeline, filepath)
 
     def on_moved(self, event):
         # Catches files dragged/moved into the folder
@@ -284,7 +287,7 @@ class IncomingHandler(FileSystemEventHandler):
             return
         filepath = Path(event.dest_path)
         if filepath.suffix.lower() in WATCHED_EXTENSIONS:
-            run_pipeline(filepath)
+            _pipeline_executor.submit(run_pipeline, filepath)
 
 # ============================================================
 # SUPABASE ORIGINAL UPLOAD
@@ -390,6 +393,9 @@ def cleanup_outputs():
             log.info(f"Deleted old output file: {f.name} (older than {OUTPUT_MAX_DAYS} days)")
 
 if __name__ == "__main__":
+    # Thread pool — up to MAX_CONCURRENT files processed at once, rest queue automatically
+    _pipeline_executor = ThreadPoolExecutor(max_workers=MAX_CONCURRENT)
+
     # Make sure folders exist
     INCOMING_DIR.mkdir(exist_ok=True)
     PROCESSED_DIR.mkdir(exist_ok=True)

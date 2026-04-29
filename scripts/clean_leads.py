@@ -379,7 +379,10 @@ def _email_name_match(email, first, last, company):
 def get_list(row):
     if str(row.get("_dnc_flag", "")).upper() in ["Y", "YES", "1", "TRUE", "DO NOT CALL"]:
         return "DNC"
-    if any(x in str(row.get("_status", "")).lower() for x in ["funded", "closed won", "won"]):
+    _status_str   = str(row.get("_status", "")).lower()
+    _status_words = set(re.findall(r'\b\w+\b', _status_str))
+    if (_status_words & {"funded", "won"} or "closed won" in _status_str) \
+            and "unfunded" not in _status_words and "not funded" not in _status_str:
         return "Funded"
 
     phone1_label    = str(row.get("Phone Status", "")).upper()
@@ -418,8 +421,14 @@ def get_list(row):
     if phone1_label == "VERIFIED":
         return "Qualified"
 
-    # Fallback
-    if phone1 and phone1_label not in ("FORMAT-BAD",):
+    # VOIP — only Qualified if email is good (carrier-filtered for SMS, risky alone)
+    if phone1_label == "VOIP":
+        if email_good or email_salvageable:
+            return "Qualified"
+        return "Needs Fixing"
+
+    # Fallback — any phone (not FORMAT-BAD, not VOIP) qualifies
+    if phone1 and phone1_label not in ("FORMAT-BAD", "VOIP"):
         return "Qualified"
     if email_good or email_salvageable:
         return "Qualified"
@@ -427,17 +436,27 @@ def get_list(row):
     return "Needs Fixing"
 
 def get_priority(row):
-    """TEXT = any verified cell phone. EMAIL only when phone is weak AND email is good."""
-    phone_label = str(row.get("Phone Status", "")).upper()
-    email_label = str(row.get("Email Status", "")).upper()
-    line_type   = str(row.get("Cell/Landline", "")).upper()
-    # Any verified cell → TEXT (best for SMS/MCA)
-    if phone_label in ("VERIFIED", "VERIFIED-NO-NAME", "MISMATCH") and line_type == "CELL":
+    """
+    TEXT  = confirmed cell phone (VERIFIED or VERIFIED-NO-NAME).
+    EMAIL = verified email wins over MISMATCH (wrong-person phone).
+    MISMATCH cell used only as last resort when email is not verified.
+    """
+    phone_label  = str(row.get("Phone Status", "")).upper()
+    email_label  = str(row.get("Email Status", "")).upper()
+    line_type    = str(row.get("Cell/Landline", "")).upper()
+    is_cell      = line_type == "CELL"
+    email_strong = email_label in ("VERIFIED", "VALID", "OK")
+
+    # Strong verified cell → TEXT (best for SMS/MCA)
+    if phone_label in ("VERIFIED", "VERIFIED-NO-NAME") and is_cell:
         return "TEXT"
-    # Phone is weak (UNKNOWN/landline/missing) — only use EMAIL if email is actually verified
-    if email_label in ("VALID", "OK", "VERIFIED"):
+    # Verified email beats MISMATCH phone (don't text a stranger)
+    if email_strong:
         return "EMAIL"
-    # Both weak — fall back to TEXT if any phone exists, else EMAIL
+    # MISMATCH cell with no good email → TEXT (last resort, might still work)
+    if phone_label == "MISMATCH" and is_cell:
+        return "TEXT"
+    # Fallback
     return "TEXT" if str(row.get("Best Phone", "")).strip() else "EMAIL"
 
 def quality_score(row):
@@ -1091,9 +1110,31 @@ def main():
         df_out[c] = df_out[c].apply(strip_illegal)
 
     # ── APPLY FIXED COLUMN ORDER ─────────────────────────────────
-    # Alt cols appended after fixed cols
     alt_cols_remaining = [c for c in df_out.columns if c.startswith("SeaCap_Phone_") or c.startswith("SeaCap_Email_")]
     ordered_cols = [c for c in FIXED_COLS if c in df_out.columns] + alt_cols_remaining
+
+    # ── PRESERVE UNMAPPED SOURCE DATA → Notes ────────────────────
+    # Any original column not already in the fixed schema goes into Notes
+    ordered_set  = set(ordered_cols)
+    unmapped_cols = [c for c in df_out.columns
+                     if c not in ordered_set and not str(c).startswith("_")]
+    if unmapped_cols:
+        def _enrich_notes(row):
+            parts = []
+            existing = str(row.get("Notes", "")).strip()
+            if existing:
+                parts.append(existing)
+            src = []
+            for c in unmapped_cols:
+                v = row.get(c, "")
+                v_str = str(v).strip()
+                if pd.notna(v) and v_str and v_str.lower() not in ("nan", "none", ""):
+                    src.append(f"{c}: {v_str}")
+            if src:
+                parts.append("Source fields: " + " | ".join(src))
+            return " || ".join(parts)
+        df_out["Notes"] = df_out.apply(_enrich_notes, axis=1)
+
     df_out = df_out[ordered_cols]
 
     # ── SPLIT INTO 4 LISTS (using _lt series) ────────────────────
