@@ -14,6 +14,8 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")   # repo root
 
 SUPABASE_URL  = os.getenv("SUPABASE_URL", "").strip().strip('"').strip("'").strip()
 SUPABASE_KEY  = (os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_ANON_KEY") or "").strip().strip('"').strip("'").strip()
+PUSH_TO_CLOSE    = os.getenv("PUSH_TO_CLOSE",    "true").strip().lower() != "false"
+PUSH_TO_SUPABASE = os.getenv("PUSH_TO_SUPABASE", "true").strip().lower() != "false"
 
 # ============================================================
 # CONFIGURATION
@@ -131,11 +133,14 @@ def run_pipeline(filepath: Path):
 
             # Auto-push to Close CRM
             pushed_to = []
-            try:
-                push_from_local(stem, "1")
-                pushed_to.append("Close CRM")
-            except Exception as e:
-                log.error(f"Close push failed: {e}")
+            if PUSH_TO_CLOSE:
+                try:
+                    push_from_local(stem, "1")
+                    pushed_to.append("Close CRM")
+                except Exception as e:
+                    log.error(f"Close push failed: {e}")
+            else:
+                log.info("Close CRM push skipped (PUSH_TO_CLOSE=false)")
 
             # SMS notification — sent after push
             try:
@@ -176,14 +181,17 @@ def run_pipeline(filepath: Path):
         log.info(f"Moved to processed/: {dest.name}")
 
         # Upload original + cleaned outputs to Supabase Storage
-        try:
-            upload_original_to_supabase(dest)
-        except Exception as e:
-            log.warning(f"Original upload to Supabase failed (non-fatal): {e}")
-        try:
-            upload_outputs_to_supabase(filepath.stem)
-        except Exception as e:
-            log.warning(f"Output upload to Supabase failed (non-fatal): {e}")
+        if PUSH_TO_SUPABASE:
+            try:
+                upload_original_to_supabase(dest)
+            except Exception as e:
+                log.warning(f"Original upload to Supabase failed (non-fatal): {e}")
+            try:
+                upload_outputs_to_supabase(filepath.stem)
+            except Exception as e:
+                log.warning(f"Output upload to Supabase failed (non-fatal): {e}")
+        else:
+            log.info("Supabase upload skipped (PUSH_TO_SUPABASE=false)")
 
         log.info("-" * 60)
 
